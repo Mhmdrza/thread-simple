@@ -136,13 +136,13 @@
     <div id="app"></div>
 
     <script type="text/babel">
-      // Database setup
+      // services/database.js
       const DB_NAME = "mindflow_db";
-      const DB_VERSION = 1;
+      const DB_VERSION = 2; // Increased version to handle schema updates
 
       async function initDB() {
         return idb.openDB(DB_NAME, DB_VERSION, {
-          upgrade(db) {
+          upgrade(db, oldVersion, newVersion, transaction) {
             // Topics store
             if (!db.objectStoreNames.contains("topics")) {
               const topicsStore = db.createObjectStore("topics", {
@@ -166,6 +166,7 @@
               });
               threadsStore.createIndex("topicId", "topicId");
               threadsStore.createIndex("createdAt", "createdAt");
+              threadsStore.createIndex("state", "state", { unique: false });
             }
 
             // Thread updates store
@@ -178,7 +179,7 @@
               updatesStore.createIndex("timestamp", "timestamp");
             }
 
-            // Actions store
+            // Thread actions store - modified with order field for sequence
             if (!db.objectStoreNames.contains("actions")) {
               const actionsStore = db.createObjectStore("actions", {
                 keyPath: "id",
@@ -189,6 +190,13 @@
               actionsStore.createIndex("status", "status");
               actionsStore.createIndex("due", "due");
               actionsStore.createIndex("createdAt", "createdAt");
+              actionsStore.createIndex("order", "order"); // To maintain action sequence
+            } else if (oldVersion === 1) {
+              // Add the order index to existing actions store if upgrading from v1
+              const actionsStore = transaction.objectStore("actions");
+              if (!actionsStore.indexNames.contains("order")) {
+                actionsStore.createIndex("order", "order");
+              }
             }
 
             // Action generators store
@@ -203,23 +211,829 @@
           },
         });
       }
-
-      // React component for the entire app
-      function App() {
+      // hooks/useDatabase.js
+      function useDatabase() {
         const [db, setDb] = React.useState(null);
-        const [view, setView] = React.useState("home");
-        const [currentThread, setCurrentThread] = React.useState(null);
-        const [currentAction, setCurrentAction] = React.useState(null);
+        const [loading, setLoading] = React.useState(true);
 
         React.useEffect(() => {
           async function setupDb() {
             const database = await initDB();
             setDb(database);
+            setLoading(false);
           }
           setupDb();
         }, []);
 
-        if (!db) {
+        return { db, loading };
+      }
+
+      // hooks/useTopics.js
+      function useTopics(db) {
+        const [topics, setTopics] = React.useState([]);
+        const [loading, setLoading] = React.useState(true);
+
+        React.useEffect(() => {
+          if (!db) return;
+
+          async function loadTopics() {
+            const allTopics = await db.getAll("topics");
+            setTopics(allTopics);
+            setLoading(false);
+          }
+
+          loadTopics();
+        }, [db]);
+
+        return { topics, loading };
+      }
+
+      // hooks/useThreads.js
+      function useThreads(db, topicId = 0) {
+        const [threads, setThreads] = React.useState([]);
+        const [loading, setLoading] = React.useState(true);
+
+        const loadThreads = React.useCallback(async () => {
+          setLoading(true);
+          let allThreads;
+
+          if (topicId === 0) {
+            allThreads = await db.getAll("threads");
+          } else {
+            const index = db.transaction("threads").store.index("topicId");
+            allThreads = await index.getAll(IDBKeyRange.only(topicId));
+          }
+
+          const threadsWithUpdates = await Promise.all(
+            allThreads.map(async (thread) => {
+              const index = db
+                .transaction("threadUpdates")
+                .store.index("threadId");
+              const updates = await index.getAll(IDBKeyRange.only(thread.id));
+              updates.sort(
+                (a, b) => new Date(b.timestamp) - new Date(a.timestamp)
+              );
+
+              return {
+                ...thread,
+                latestUpdate: updates[0] || null,
+              };
+            })
+          );
+
+          threadsWithUpdates.sort((a, b) => {
+            const dateA = a.latestUpdate
+              ? new Date(a.latestUpdate.timestamp)
+              : new Date(a.createdAt);
+            const dateB = b.latestUpdate
+              ? new Date(b.latestUpdate.timestamp)
+              : new Date(b.createdAt);
+            return dateB - dateA;
+          });
+
+          setThreads(threadsWithUpdates);
+          setLoading(false);
+        }, [db, topicId]);
+
+        React.useEffect(() => {
+          if (!db) return;
+          loadThreads();
+        }, [db, topicId, loadThreads]);
+
+        return { threads, loading, loadThreads };
+      }
+
+      // hooks/useActions.js
+      function useActions(db, topicId = 0) {
+        const [actions, setActions] = React.useState([]);
+        const [loading, setLoading] = React.useState(true);
+
+        const loadActions = React.useCallback(async () => {
+          setLoading(true);
+          let actionsList;
+
+          if (topicId === 0) {
+            // Get standalone actions
+            const index = db.transaction("actions").store.index("status");
+            const standardActions = await index.getAll(
+              IDBKeyRange.only("pending")
+            );
+
+            // Get only the first pending action from each thread
+            const threadActions = await getFirstPendingThreadActions(db);
+
+            // Combine them
+            actionsList = [...standardActions, ...threadActions];
+          } else {
+            const index = db.transaction("actions").store.index("topicId");
+            actionsList = await index.getAll(IDBKeyRange.only(topicId));
+            actionsList = actionsList.filter(
+              (action) => action.status === "pending"
+            );
+          }
+
+          const oneDayAgo = new Date();
+          oneDayAgo.setDate(oneDayAgo.getDate() - 1);
+
+          const processedActions = actionsList.map((action) => {
+            const createdAt = new Date(action.createdAt);
+            if (createdAt < oneDayAgo && action.status === "pending") {
+              return { ...action, untouched: true };
+            }
+            return action;
+          });
+
+          setActions(processedActions);
+          setLoading(false);
+        }, [db, topicId]);
+
+        React.useEffect(() => {
+          if (!db) return;
+          loadActions();
+        }, [db, topicId, loadActions]);
+
+        // Helper function to get only first pending action from each thread
+        async function getFirstPendingThreadActions(db) {
+          const threads = await db.getAll("threads");
+          const result = [];
+
+          for (const thread of threads) {
+            const index = db.transaction("actions").store.index("threadId");
+            const threadActions = await index.getAll(
+              IDBKeyRange.only(thread.id)
+            );
+
+            // Sort by order to ensure we get the earliest action in sequence
+            threadActions.sort((a, b) => (a.order || 0) - (b.order || 0));
+
+            // Find the first pending action
+            const firstPending = threadActions.find(
+              (a) => a.status === "pending"
+            );
+            if (firstPending) {
+              result.push({
+                ...firstPending,
+                threadTitle: thread.title, // Include thread title for UI
+              });
+            }
+          }
+
+          return result;
+        }
+
+        const handleActionStatusChange = async (actionId, newStatus) => {
+          const action = await db.get("actions", actionId);
+          action.status = newStatus;
+          action.completedAt =
+            newStatus === "completed" ? new Date().toISOString() : null;
+          await db.put("actions", action);
+
+          // Reload actions to show the next pending action if this was part of a thread
+          await loadActions();
+        };
+
+        return { actions, loading, handleActionStatusChange, loadActions };
+      }
+
+      // hooks/useThreadActions.js
+      function useThreadActions(db, threadId) {
+        const [actions, setActions] = React.useState([]);
+        const [loading, setLoading] = React.useState(true);
+
+        const loadThreadActions = React.useCallback(async () => {
+          if (!threadId) return;
+
+          setLoading(true);
+          const index = db.transaction("actions").store.index("threadId");
+          const threadActions = await index.getAll(IDBKeyRange.only(threadId));
+
+          // Sort by order to maintain sequence
+          threadActions.sort((a, b) => (a.order || 0) - (b.order || 0));
+          setActions(threadActions);
+          setLoading(false);
+        }, [db, threadId]);
+
+        React.useEffect(() => {
+          if (!db || !threadId) return;
+          loadThreadActions();
+        }, [db, threadId, loadThreadActions]);
+
+        const addThreadAction = async (text) => {
+          // Find the highest order value
+          const maxOrder =
+            actions.length > 0
+              ? Math.max(...actions.map((a) => a.order || 0))
+              : -1;
+
+          const newAction = {
+            text,
+            threadId,
+            status: "pending",
+            createdAt: new Date().toISOString(),
+            order: maxOrder + 1, // Set next in sequence
+          };
+
+          await db.add("actions", newAction);
+          await loadThreadActions(); // Reload to get updated list with proper order
+        };
+
+        const updateActionStatus = async (actionId, newStatus) => {
+          const action = await db.get("actions", actionId);
+          action.status = newStatus;
+          action.completedAt = ["completed", "discarded", "delegated"].includes(
+            newStatus
+          )
+            ? new Date().toISOString()
+            : null;
+          await db.put("actions", action);
+
+          await loadThreadActions();
+        };
+
+        return { actions, loading, addThreadAction, updateActionStatus };
+      } // components/BottomNav.js
+      function BottomNav({ currentView, navigateTo }) {
+        return (
+          <div className="fixed bottom-0 w-full bg-white dark:bg-secondary-800 border-t border-secondary-200 dark:border-secondary-700 shadow-lg z-50">
+            <div className="flex justify-around max-w-md mx-auto">
+              <NavButton
+                icon="home"
+                label="Home"
+                isActive={currentView === "home"}
+                onClick={() => navigateTo("home")}
+              />
+              <NavButton
+                icon="actions"
+                label="Actions"
+                isActive={currentView === "actions"}
+                onClick={() => navigateTo("actions")}
+              />
+              <NavButton
+                icon="generators"
+                label="Generators"
+                isActive={currentView === "actionGenerators"}
+                onClick={() => navigateTo("actionGenerators")}
+              />
+              <NavButton
+                icon="reports"
+                label="Reports"
+                isActive={currentView === "reports"}
+                onClick={() => navigateTo("reports")}
+              />
+              <NavButton
+                icon="topics"
+                label="Topics"
+                isActive={currentView === "topics"}
+                onClick={() => navigateTo("topics")}
+              />
+            </div>
+          </div>
+        );
+      }
+
+      // components/NavButton.js
+      function NavButton({ icon, label, isActive, onClick }) {
+        let iconElement;
+
+        switch (icon) {
+          case "home":
+            iconElement = (
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="h-6 w-6"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"
+                />
+              </svg>
+            );
+            break;
+          // ...other icons
+        }
+
+        return (
+          <button
+            onClick={onClick}
+            className={`flex flex-col items-center p-3 w-full ${
+              isActive
+                ? "text-primary-600 dark:text-primary-400"
+                : "text-secondary-500 dark:text-secondary-400"
+            }`}
+          >
+            {iconElement}
+            <span className="text-xs">{label}</span>
+          </button>
+        );
+      }
+
+      // components/TopicFilter.js
+      function TopicFilter({ topics, selectedTopic, onSelectTopic }) {
+        return (
+          <div className="overflow-x-auto pb-3 mb-4">
+            <div className="flex space-x-2 w-max">
+              <button
+                onClick={() => onSelectTopic(0)}
+                className={`px-4 py-2 rounded-full text-sm font-medium transition ${
+                  selectedTopic === 0
+                    ? "bg-primary-100 text-primary-800 dark:bg-primary-800 dark:text-primary-100"
+                    : "bg-white text-secondary-700 dark:bg-secondary-800 dark:text-secondary-300"
+                } shadow-sm`}
+              >
+                All Topics
+              </button>
+
+              {topics.map((topic) => (
+                <button
+                  key={topic.id}
+                  onClick={() => onSelectTopic(topic.id)}
+                  className={`px-4 py-2 rounded-full text-sm font-medium transition ${
+                    selectedTopic === topic.id
+                      ? "bg-primary-100 text-primary-800 dark:bg-primary-800 dark:text-primary-100"
+                      : "bg-white text-secondary-700 dark:bg-secondary-800 dark:text-secondary-300"
+                  } shadow-sm`}
+                  style={
+                    selectedTopic === topic.id
+                      ? {
+                          backgroundColor: `${topic.color}20`,
+                          color: topic.color,
+                        }
+                      : {}
+                  }
+                >
+                  {topic.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        );
+      }
+
+      // components/ActionItem.js
+      function ActionItem({ action, topic, onStatusChange, navigateToThread }) {
+        return (
+          <div
+            className={`bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-4 flex items-center border-l-4 ${
+              action.untouched
+                ? "border-red-500"
+                : "border-secondary-300 dark:border-secondary-600"
+            }`}
+          >
+            <button
+              onClick={() => onStatusChange(action.id, "completed")}
+              className="w-6 h-6 rounded-full border-2 border-secondary-300 dark:border-secondary-500 hover:border-accent-500 dark:hover:border-accent-400 mr-3 flex-shrink-0"
+              aria-label="Mark as completed"
+            ></button>
+            <div className="flex-grow">
+              <p className="text-secondary-900 dark:text-secondary-100 line-clamp-2">
+                {action.text}
+              </p>
+
+              {/* If this is a thread action, show the thread title and link */}
+              {action.threadId && action.threadTitle && (
+                <button
+                  onClick={() => navigateToThread(action.threadId)}
+                  className="text-xs text-primary-600 hover:text-primary-800 dark:text-primary-400 dark:hover:text-primary-300 flex items-center"
+                >
+                  From thread: {action.threadTitle}
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    className="h-3 w-3 ml-1"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M9 5l7 7-7 7"
+                    />
+                  </svg>
+                </button>
+              )}
+
+              {action.untouched && (
+                <span className="text-xs font-medium text-red-600 dark:text-red-400">
+                  Untouched for over a day
+                </span>
+              )}
+
+              {topic && (
+                <span
+                  className="text-xs px-2 py-0.5 rounded-full ml-2"
+                  style={{
+                    backgroundColor: `${topic.color}20`,
+                    color: topic.color,
+                  }}
+                >
+                  {topic.name}
+                </span>
+              )}
+            </div>
+            <div className="flex space-x-1 ml-2">
+              <button
+                onClick={() => onStatusChange(action.id, "delayed")}
+                className="text-orange-500 hover:text-orange-600 dark:hover:text-orange-400 p-2"
+                title="Delay"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="h-5 w-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
+                  />
+                </svg>
+              </button>
+              <button
+                onClick={() => onStatusChange(action.id, "discarded")}
+                className="text-red-500 hover:text-red-600 dark:hover:text-red-400 p-2"
+                title="Discard"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="h-5 w-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                  />
+                </svg>
+              </button>
+            </div>
+          </div>
+        );
+      } // components/ThreadActions.js
+      function ThreadActions({ db, threadId }) {
+        const { actions, loading, addThreadAction, updateActionStatus } =
+          useThreadActions(db, threadId);
+        const [newActionText, setNewActionText] = React.useState("");
+
+        const handleAddAction = async (e) => {
+          e.preventDefault();
+          if (!newActionText.trim()) return;
+
+          await addThreadAction(newActionText);
+          setNewActionText("");
+        };
+
+        if (loading) {
+          return <LoadingSpinner size="md" />;
+        }
+
+        return (
+          <div className="mt-6">
+            <h3 className="text-lg font-medium text-secondary-900 dark:text-secondary-100 mb-4">
+              Thread Actions
+            </h3>
+
+            {/* Vertical stepper for thread actions */}
+            <div className="relative pl-8 mb-6">
+              {actions.length > 0 && (
+                <div className="absolute top-0 bottom-0 left-3 w-0.5 bg-secondary-200 dark:bg-secondary-700"></div>
+              )}
+
+              {actions.map((action, index) => {
+                // Find the first pending action index
+                const firstPendingIndex = actions.findIndex(
+                  (a) => a.status === "pending"
+                );
+
+                // Determine if this action is the current active step
+                const isCurrent =
+                  action.status === "pending" && index === firstPendingIndex;
+
+                return (
+                  <div key={action.id} className="mb-6 relative">
+                    {/* Status indicator dot */}
+                    <div
+                      className={`absolute left-3 transform -translate-x-1/2 -translate-y-1/2 w-6 h-6 rounded-full flex items-center justify-center z-10 ${
+                        action.status === "completed"
+                          ? "bg-accent-500 text-white"
+                          : isCurrent
+                          ? "bg-primary-500 text-white"
+                          : action.status === "pending"
+                          ? "bg-white dark:bg-secondary-800 border-2 border-primary-500 dark:border-primary-400"
+                          : "bg-secondary-100 dark:bg-secondary-700 text-secondary-500 dark:text-secondary-400"
+                      }`}
+                    >
+                      {action.status === "completed" && (
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          className="h-4 w-4"
+                          viewBox="0 0 20 20"
+                          fill="currentColor"
+                        >
+                          <path
+                            fillRule="evenodd"
+                            d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+                            clipRule="evenodd"
+                          />
+                        </svg>
+                      )}
+                      {action.status === "discarded" && (
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          className="h-4 w-4"
+                          viewBox="0 0 20 20"
+                          fill="currentColor"
+                        >
+                          <path
+                            fillRule="evenodd"
+                            d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                            clipRule="evenodd"
+                          />
+                        </svg>
+                      )}
+                      {action.status === "delegated" && (
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          className="h-4 w-4"
+                          viewBox="0 0 20 20"
+                          fill="currentColor"
+                        >
+                          <path d="M8 9a3 3 0 100-6 3 3 0 000 6zM8 11a6 6 0 00-6 6H2a8 8 0 0116 0h-2a6 6 0 00-6-6z" />
+                        </svg>
+                      )}
+                    </div>
+
+                    {/* Action content */}
+                    <div
+                      className={`pl-6 ${
+                        action.status === "completed"
+                          ? "text-secondary-500 dark:text-secondary-400 line-through"
+                          : isCurrent
+                          ? "text-secondary-900 dark:text-secondary-100 font-medium"
+                          : action.status === "pending"
+                          ? "text-secondary-700 dark:text-secondary-300"
+                          : "text-secondary-500 dark:text-secondary-400"
+                      }`}
+                    >
+                      <p>{action.text}</p>
+
+                      {action.status === "pending" && (
+                        <div className="mt-2 flex space-x-2">
+                          <button
+                            onClick={() =>
+                              updateActionStatus(action.id, "completed")
+                            }
+                            className="px-2 py-1 text-xs font-medium rounded bg-accent-100 text-accent-700 dark:bg-accent-900 dark:text-accent-300 hover:bg-accent-200 dark:hover:bg-accent-800"
+                          >
+                            Complete
+                          </button>
+                          <button
+                            onClick={() =>
+                              updateActionStatus(action.id, "discarded")
+                            }
+                            className="px-2 py-1 text-xs font-medium rounded bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300 hover:bg-red-200 dark:hover:bg-red-800"
+                          >
+                            Discard
+                          </button>
+                          <button
+                            onClick={() =>
+                              updateActionStatus(action.id, "delegated")
+                            }
+                            className="px-2 py-1 text-xs font-medium rounded bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300 hover:bg-orange-200 dark:hover:bg-orange-800"
+                          >
+                            Delegate
+                          </button>
+                        </div>
+                      )}
+
+                      {action.status !== "pending" && (
+                        <span className="text-xs text-secondary-500 dark:text-secondary-400">
+                          {action.status}{" "}
+                          {action.completedAt
+                            ? `on ${new Date(
+                                action.completedAt
+                              ).toLocaleDateString()}`
+                            : ""}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Add new action form */}
+            <form onSubmit={handleAddAction} className="mt-4">
+              <div className="flex flex-col space-y-2">
+                <input
+                  type="text"
+                  value={newActionText}
+                  onChange={(e) => setNewActionText(e.target.value)}
+                  placeholder="Add a new action step..."
+                  className="px-4 py-2 border border-secondary-200 dark:border-secondary-700 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 dark:bg-secondary-800 dark:text-white"
+                />
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-primary-500 text-white rounded-md hover:bg-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
+                >
+                  Add Action
+                </button>
+              </div>
+            </form>
+          </div>
+        );
+      } // components/ThreadDetail.js
+      function ThreadDetail({ db, thread, navigateTo }) {
+        const [currentThread, setCurrentThread] = React.useState(thread);
+        const [updates, setUpdates] = React.useState([]);
+        const [topics, setTopics] = React.useState([]);
+        const [loading, setLoading] = React.useState(true);
+        const [newUpdate, setNewUpdate] = React.useState("");
+
+        React.useEffect(() => {
+          async function loadData() {
+            setLoading(true);
+
+            // Load the thread data
+            const threadData = await db.get("threads", thread.id);
+            setCurrentThread(threadData);
+
+            // Load thread updates
+            const index = db
+              .transaction("threadUpdates")
+              .store.index("threadId");
+            const updateData = await index.getAll(IDBKeyRange.only(thread.id));
+            updateData.sort(
+              (a, b) => new Date(b.timestamp) - new Date(a.timestamp)
+            );
+            setUpdates(updateData);
+
+            // Load topics
+            const topicsData = await db.getAll("topics");
+            setTopics(topicsData);
+
+            setLoading(false);
+          }
+
+          loadData();
+        }, [db, thread.id]);
+
+        const handleAddUpdate = async (e) => {
+          e.preventDefault();
+          if (!newUpdate.trim()) return;
+
+          const update = {
+            threadId: thread.id,
+            content: newUpdate,
+            timestamp: new Date().toISOString(),
+          };
+
+          const id = await db.add("threadUpdates", update);
+          const newUpdateWithId = { ...update, id };
+          setUpdates([newUpdateWithId, ...updates]);
+          setNewUpdate("");
+        };
+
+        const handleStateChange = async (e) => {
+          const newState = e.target.value;
+          const updatedThread = { ...currentThread, state: newState };
+          await db.put("threads", updatedThread);
+          setCurrentThread(updatedThread);
+        };
+
+        const handleTopicChange = async (e) => {
+          const topicId = parseInt(e.target.value);
+          const updatedThread = { ...currentThread, topicId };
+          await db.put("threads", updatedThread);
+          setCurrentThread(updatedThread);
+        };
+
+        if (loading) {
+          return <LoadingSpinner />;
+        }
+
+        return (
+          <div className="max-w-2xl mx-auto px-4 py-6 animate-fade-in">
+            <button
+              onClick={() => navigateTo("home")}
+              className="mb-4 flex items-center text-primary-600 hover:text-primary-800 dark:text-primary-400 dark:hover:text-primary-300"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="h-5 w-5 mr-1"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+              >
+                <path
+                  fillRule="evenodd"
+                  d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z"
+                  clipRule="evenodd"
+                />
+              </svg>
+              Back
+            </button>
+
+            <div className="bg-white dark:bg-secondary-800 rounded-xl shadow-sm p-6">
+              {/* Thread header */}
+              <div className="flex justify-between items-start mb-4">
+                <h1 className="text-2xl font-bold text-secondary-900 dark:text-secondary-100">
+                  {currentThread.title}
+                </h1>
+
+                <div className="flex space-x-2">
+                  <select
+                    value={currentThread.state || "open"}
+                    onChange={handleStateChange}
+                    className="px-2 py-1 text-sm border border-secondary-200 dark:border-secondary-700 rounded dark:bg-secondary-700 dark:text-white"
+                  >
+                    <option value="open">Open</option>
+                    <option value="blocked">Blocked</option>
+                    <option value="completed">Completed</option>
+                  </select>
+
+                  <select
+                    value={currentThread.topicId}
+                    onChange={handleTopicChange}
+                    className="px-2 py-1 text-sm border border-secondary-200 dark:border-secondary-700 rounded dark:bg-secondary-700 dark:text-white"
+                  >
+                    {topics.map((topic) => (
+                      <option key={topic.id} value={topic.id}>
+                        {topic.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Thread actions component */}
+              <ThreadActions db={db} threadId={thread.id} />
+
+              {/* Thread updates section */}
+              <div className="mt-8 border-t border-secondary-200 dark:border-secondary-700 pt-6">
+                <h2 className="text-lg font-medium text-secondary-900 dark:text-secondary-100 mb-4">
+                  Thread Updates
+                </h2>
+
+                <form onSubmit={handleAddUpdate} className="mb-6">
+                  <textarea
+                    value={newUpdate}
+                    onChange={(e) => setNewUpdate(e.target.value)}
+                    placeholder="Add an update to this thread..."
+                    className="w-full px-4 py-2 border border-secondary-300 dark:border-secondary-600 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 dark:bg-secondary-800 dark:text-white"
+                    rows="3"
+                  ></textarea>
+                  <button
+                    type="submit"
+                    className="mt-2 px-4 py-2 bg-primary-500 text-white rounded-md hover:bg-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
+                  >
+                    Add Update
+                  </button>
+                </form>
+
+                {updates.length > 0 ? (
+                  <div className="space-y-4">
+                    {updates.map((update) => (
+                      <div
+                        key={update.id}
+                        className="p-4 bg-secondary-50 dark:bg-secondary-900 rounded-lg"
+                      >
+                        <div className="text-xs text-secondary-500 dark:text-secondary-400 mb-1">
+                          {new Date(update.timestamp).toLocaleString()}
+                        </div>
+                        <p className="text-secondary-900 dark:text-secondary-100">
+                          {update.content}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-center text-secondary-500 dark:text-secondary-400 py-4">
+                    No updates yet
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      }
+      function App() {
+        const { db, loading } = useDatabase();
+        const [view, setView] = React.useState("action");
+        const [currentThread, setCurrentThread] = React.useState(null);
+        const [currentAction, setCurrentAction] = React.useState(null);
+
+        if (loading) {
           return (
             <div className="flex h-screen items-center justify-center">
               <div className="w-12 h-12 border-4 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
@@ -266,7 +1080,7 @@
             case "actionGenerators":
               return <ActionGenerators db={db} navigateTo={navigateTo} />;
             case "reports":
-              return <Reports db={db} />;
+              return <Reports db={db} navigateTo={navigateTo} />;
             case "topics":
               return <TopicsManager db={db} navigateTo={navigateTo} />;
             default:
@@ -282,3012 +1096,6 @@
         );
       }
 
-      // Bottom navigation component
-      function BottomNav({ currentView, navigateTo }) {
-        return (
-          <div className="fixed bottom-0 w-full bg-white dark:bg-secondary-800 border-t border-secondary-200 dark:border-secondary-700 shadow-lg z-50">
-            <div className="flex justify-around max-w-md mx-auto">
-              <button
-                onClick={() => navigateTo("home")}
-                className={`flex flex-col items-center p-3 w-full ${
-                  currentView === "home"
-                    ? "text-primary-600 dark:text-primary-400"
-                    : "text-secondary-500 dark:text-secondary-400"
-                }`}
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  className="h-6 w-6"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"
-                  />
-                </svg>
-                <span className="text-xs">Home</span>
-              </button>
-              <button
-                onClick={() => navigateTo("actions")}
-                className={`flex flex-col items-center p-3 w-full ${
-                  currentView === "actions"
-                    ? "text-primary-600 dark:text-primary-400"
-                    : "text-secondary-500 dark:text-secondary-400"
-                }`}
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  className="h-6 w-6"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"
-                  />
-                </svg>
-                <span className="text-xs">Actions</span>
-              </button>
-              <button
-                onClick={() => navigateTo("actionGenerators")}
-                className={`flex flex-col items-center p-3 w-full ${
-                  currentView === "actionGenerators"
-                    ? "text-primary-600 dark:text-primary-400"
-                    : "text-secondary-500 dark:text-secondary-400"
-                }`}
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  className="h-6 w-6"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
-                  />
-                </svg>
-                <span className="text-xs">Generators</span>
-              </button>
-              <button
-                onClick={() => navigateTo("reports")}
-                className={`flex flex-col items-center p-3 w-full ${
-                  currentView === "reports"
-                    ? "text-primary-600 dark:text-primary-400"
-                    : "text-secondary-500 dark:text-secondary-400"
-                }`}
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  className="h-6 w-6"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"
-                  />
-                </svg>
-                <span className="text-xs">Reports</span>
-              </button>
-              <button
-                onClick={() => navigateTo("topics")}
-                className={`flex flex-col items-center p-3 w-full ${
-                  currentView === "topics"
-                    ? "text-primary-600 dark:text-primary-400"
-                    : "text-secondary-500 dark:text-secondary-400"
-                }`}
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  className="h-6 w-6"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"
-                  />
-                </svg>
-                <span className="text-xs">Topics</span>
-              </button>
-            </div>
-          </div>
-        );
-      }
-
-      // Home view component
-      function Home({ db, navigateTo }) {
-        const [topics, setTopics] = React.useState([]);
-        const [selectedTopic, setSelectedTopic] = React.useState(0); // 0 means "All topics"
-        const [threads, setThreads] = React.useState([]);
-        const [actions, setActions] = React.useState([]);
-        const [loading, setLoading] = React.useState(true);
-        const [newAction, setNewAction] = React.useState("");
-
-        // Load topics, actions, and threads on component mount
-        React.useEffect(() => {
-          async function loadData() {
-            setLoading(true);
-
-            // Load topics
-            const allTopics = await db.getAll("topics");
-            setTopics(allTopics);
-
-            // Load actions
-            await loadActions(selectedTopic);
-
-            // Load threads with latest updates
-            await loadThreads(selectedTopic);
-
-            setLoading(false);
-          }
-
-          loadData();
-        }, [db, selectedTopic]);
-
-        async function loadActions(topicId) {
-          let actions;
-          if (topicId === 0) {
-            actions = await db.getAllFromIndex("actions", "status", "pending");
-          } else {
-            const index = db.transaction("actions").store.index("topicId");
-            actions = await index.getAll(IDBKeyRange.only(topicId));
-            actions = actions.filter((action) => action.status === "pending");
-          }
-
-          // Check for "untouched" actions (older than a day)
-          const oneDayAgo = new Date();
-          oneDayAgo.setDate(oneDayAgo.getDate() - 1);
-
-          const processedActions = actions.map((action) => {
-            const createdAt = new Date(action.createdAt);
-            if (createdAt < oneDayAgo && action.status === "pending") {
-              return { ...action, untouched: true };
-            }
-            return action;
-          });
-
-          setActions(processedActions);
-        }
-
-        async function loadThreads(topicId) {
-          let allThreads;
-          if (topicId === 0) {
-            allThreads = await db.getAll("threads");
-          } else {
-            const index = db.transaction("threads").store.index("topicId");
-            allThreads = await index.getAll(IDBKeyRange.only(topicId));
-          }
-
-          // Load latest update for each thread
-          const threadsWithUpdates = await Promise.all(
-            allThreads.map(async (thread) => {
-              const index = db
-                .transaction("threadUpdates")
-                .store.index("threadId");
-              const updates = await index.getAll(IDBKeyRange.only(thread.id));
-              updates.sort(
-                (a, b) => new Date(b.timestamp) - new Date(a.timestamp)
-              );
-              return {
-                ...thread,
-                latestUpdate: updates[0] || null,
-              };
-            })
-          );
-
-          // Sort by most recently updated
-          threadsWithUpdates.sort((a, b) => {
-            const dateA = a.latestUpdate
-              ? new Date(a.latestUpdate.timestamp)
-              : new Date(a.createdAt);
-            const dateB = b.latestUpdate
-              ? new Date(b.latestUpdate.timestamp)
-              : new Date(b.createdAt);
-            return dateB - dateA;
-          });
-
-          setThreads(threadsWithUpdates);
-        }
-
-        // Handle creating a new action
-        const handleNewAction = async (e) => {
-          e.preventDefault();
-          if (!newAction.trim()) return;
-
-          const action = {
-            text: newAction,
-            status: "pending",
-            topicId: selectedTopic || 1, // Use "All" as default topic
-            createdAt: new Date().toISOString(),
-            due: null,
-          };
-
-          await db.add("actions", action);
-          setNewAction("");
-          await loadActions(selectedTopic);
-        };
-
-        // Handle action status change
-        const handleActionStatusChange = async (actionId, newStatus) => {
-          const action = await db.get("actions", actionId);
-          action.status = newStatus;
-          action.completedAt =
-            newStatus === "completed" ? new Date().toISOString() : null;
-
-          await db.put("actions", action);
-          await loadActions(selectedTopic);
-        };
-
-        return (
-          <div className="max-w-7xl mx-auto px-4 py-6 animate-fade-in">
-            <div className="flex justify-between items-center mb-6">
-              <h1 className="text-2xl font-bold text-secondary-900 dark:text-secondary-100">
-                MindFlow
-              </h1>
-            </div>
-
-            {/* Topic filter */}
-            <div className="overflow-x-auto pb-3 mb-4">
-              <div className="flex space-x-2 w-max">
-                <button
-                  onClick={() => setSelectedTopic(0)}
-                  className={`px-4 py-2 rounded-full text-sm font-medium transition ${
-                    selectedTopic === 0
-                      ? "bg-primary-100 text-primary-800 dark:bg-primary-800 dark:text-primary-100"
-                      : "bg-white text-secondary-700 dark:bg-secondary-800 dark:text-secondary-300"
-                  } shadow-sm`}
-                >
-                  All Topics
-                </button>
-
-                {topics.map((topic) => (
-                  <button
-                    key={topic.id}
-                    onClick={() => setSelectedTopic(topic.id)}
-                    className={`px-4 py-2 rounded-full text-sm font-medium transition ${
-                      selectedTopic === topic.id
-                        ? "bg-primary-100 text-primary-800 dark:bg-primary-800 dark:text-primary-100"
-                        : "bg-white text-secondary-700 dark:bg-secondary-800 dark:text-secondary-300"
-                    } shadow-sm`}
-                    style={
-                      selectedTopic === topic.id
-                        ? {
-                            backgroundColor: `${topic.color}20`,
-                            color: topic.color,
-                          }
-                        : {}
-                    }
-                  >
-                    {topic.name}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Quick action entry */}
-            <form onSubmit={handleNewAction} className="mb-6">
-              <div className="flex">
-                <input
-                  type="text"
-                  value={newAction}
-                  onChange={(e) => setNewAction(e.target.value)}
-                  placeholder="Add a new action..."
-                  className="flex-grow px-4 py-3 rounded-l-lg border border-secondary-200 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:bg-secondary-800 dark:border-secondary-700 dark:text-white"
-                />
-                <button
-                  type="submit"
-                  className="px-4 py-3 rounded-r-lg bg-primary-500 text-white hover:bg-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
-                >
-                  Add
-                </button>
-              </div>
-            </form>
-
-            {loading ? (
-              <div className="flex justify-center py-8">
-                <div className="w-10 h-10 border-4 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
-              </div>
-            ) : (
-              <div className="space-y-8">
-                {/* Actions section */}
-                <div>
-                  <div className="flex justify-between items-center mb-4">
-                    <h2 className="text-lg font-semibold text-secondary-900 dark:text-secondary-100">
-                      Recent Actions
-                    </h2>
-                    <button
-                      onClick={() => navigateTo("actions")}
-                      className="text-sm text-primary-600 hover:text-primary-800 dark:text-primary-400 dark:hover:text-primary-300"
-                    >
-                      See all
-                    </button>
-                  </div>
-
-                  {actions.length > 0 ? (
-                    <div className="space-y-3">
-                      {actions.slice(0, 5).map((action) => (
-                        <div
-                          key={action.id}
-                          className={`bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-4 flex items-center border-l-4 ${
-                            action.untouched
-                              ? "border-red-500"
-                              : "border-secondary-300 dark:border-secondary-600"
-                          }`}
-                        >
-                          <button
-                            onClick={() =>
-                              handleActionStatusChange(action.id, "completed")
-                            }
-                            className="w-6 h-6 rounded-full border-2 border-secondary-300 dark:border-secondary-500 hover:border-accent-500 dark:hover:border-accent-400 mr-3 flex-shrink-0"
-                            aria-label="Mark as completed"
-                          ></button>
-                          <div className="flex-grow">
-                            <p className="text-secondary-900 dark:text-secondary-100 line-clamp-2">
-                              {action.text}
-                            </p>
-                            {action.untouched && (
-                              <span className="text-xs font-medium text-red-600 dark:text-red-400">
-                                Untouched for over a day
-                              </span>
-                            )}
-                          </div>
-                          <div className="flex space-x-1 ml-2">
-                            <button
-                              onClick={() =>
-                                handleActionStatusChange(action.id, "delayed")
-                              }
-                              className="text-orange-500 hover:text-orange-600 dark:hover:text-orange-400 p-2"
-                              title="Delay"
-                            >
-                              <svg
-                                xmlns="http://www.w3.org/2000/svg"
-                                className="h-5 w-5"
-                                fill="none"
-                                viewBox="0 0 24 24"
-                                stroke="currentColor"
-                              >
-                                <path
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  strokeWidth={2}
-                                  d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
-                                />
-                              </svg>
-                            </button>
-                            <button
-                              onClick={() =>
-                                handleActionStatusChange(action.id, "discarded")
-                              }
-                              className="text-red-500 hover:text-red-600 dark:hover:text-red-400 p-2"
-                              title="Discard"
-                            >
-                              <svg
-                                xmlns="http://www.w3.org/2000/svg"
-                                className="h-5 w-5"
-                                fill="none"
-                                viewBox="0 0 24 24"
-                                stroke="currentColor"
-                              >
-                                <path
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  strokeWidth={2}
-                                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                                />
-                              </svg>
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-6 text-center">
-                      <p className="text-secondary-600 dark:text-secondary-400">
-                        No pending actions in this topic.
-                      </p>
-                      <button
-                        onClick={() => navigateTo("actions")}
-                        className="mt-3 inline-flex items-center text-sm font-medium text-primary-600 hover:text-primary-800 dark:text-primary-400 dark:hover:text-primary-300"
-                      >
-                        See all actions
-                        <svg
-                          xmlns="http://www.w3.org/2000/svg"
-                          className="ml-1 h-4 w-4"
-                          fill="none"
-                          viewBox="0 0 24 24"
-                          stroke="currentColor"
-                        >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth={2}
-                            d="M13 7l5 5m0 0l-5 5m5-5H6"
-                          />
-                        </svg>
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                {/* Threads section */}
-                <div>
-                  <div className="flex justify-between items-center mb-4">
-                    <h2 className="text-lg font-semibold text-secondary-900 dark:text-secondary-100">
-                      Recent Threads
-                    </h2>
-                    <button
-                      onClick={() => navigateTo("newThread")}
-                      className="text-sm text-primary-600 hover:text-primary-800 dark:text-primary-400 dark:hover:text-primary-300"
-                    >
-                      New Thread
-                    </button>
-                  </div>
-
-                  {threads.length > 0 ? (
-                    <div className="space-y-4">
-                      {threads.slice(0, 5).map((thread) => {
-                        const topic = topics.find(
-                          (t) => t.id === thread.topicId
-                        );
-                        return (
-                          <div
-                            key={thread.id}
-                            onClick={() => navigateTo("thread", thread)}
-                            className="bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-5 cursor-pointer hover:shadow-md transition"
-                          >
-                            <div className="flex justify-between items-start mb-2">
-                              <h3 className="text-base font-medium text-secondary-900 dark:text-secondary-100">
-                                {thread.title}
-                              </h3>
-                              {topic && (
-                                <span
-                                  className="px-2 py-1 text-xs rounded-full"
-                                  style={{
-                                    backgroundColor: `${topic.color}20`,
-                                    color: topic.color,
-                                  }}
-                                >
-                                  {topic.name}
-                                </span>
-                              )}
-                            </div>
-
-                            {thread.latestUpdate ? (
-                              <div className="mt-3 border-l-2 border-secondary-200 dark:border-secondary-700 pl-3">
-                                <div className="text-xs text-secondary-500 dark:text-secondary-400 mb-1">
-                                  Latest update:{" "}
-                                  {new Date(
-                                    thread.latestUpdate.timestamp
-                                  ).toLocaleString()}
-                                </div>
-                                <p className="text-sm text-secondary-700 dark:text-secondary-300">
-                                  {thread.latestUpdate.content}
-                                </p>
-                              </div>
-                            ) : (
-                              <p className="mt-2 text-sm text-secondary-600 dark:text-secondary-400">
-                                No updates yet. Click to add your first thought.
-                              </p>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    <div className="bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-6 text-center">
-                      <p className="text-secondary-600 dark:text-secondary-400">
-                        No threads in this topic yet.
-                      </p>
-                      <button
-                        onClick={() => navigateTo("newThread")}
-                        className="mt-3 inline-flex items-center text-sm font-medium text-primary-600 hover:text-primary-800 dark:text-primary-400 dark:hover:text-primary-300"
-                      >
-                        Create your first thread
-                        <svg
-                          xmlns="http://www.w3.org/2000/svg"
-                          className="ml-1 h-4 w-4"
-                          fill="none"
-                          viewBox="0 0 24 24"
-                          stroke="currentColor"
-                        >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth={2}
-                            d="M13 7l5 5m0 0l-5 5m5-5H6"
-                          />
-                        </svg>
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-        );
-      }
-
-      // Topic manager component
-      function TopicsManager({ db, navigateTo }) {
-        const [topics, setTopics] = React.useState([]);
-        const [loading, setLoading] = React.useState(true);
-        const [showAddModal, setShowAddModal] = React.useState(false);
-        const [editingTopic, setEditingTopic] = React.useState(null);
-        const [newTopicName, setNewTopicName] = React.useState("");
-        const [newTopicColor, setNewTopicColor] = React.useState("#22c55e");
-
-        React.useEffect(() => {
-          loadTopics();
-        }, []);
-
-        async function loadTopics() {
-          setLoading(true);
-          const allTopics = await db.getAll("topics");
-          setTopics(allTopics);
-          setLoading(false);
-        }
-
-        const openAddModal = () => {
-          setEditingTopic(null);
-          setNewTopicName("");
-          setNewTopicColor("#22c55e");
-          setShowAddModal(true);
-        };
-
-        const openEditModal = (topic) => {
-          setEditingTopic(topic);
-          setNewTopicName(topic.name);
-          setNewTopicColor(topic.color);
-          setShowAddModal(true);
-        };
-
-        const handleSaveTopic = async () => {
-          if (!newTopicName.trim()) return;
-
-          if (editingTopic) {
-            // Update existing topic
-            await db.put("topics", {
-              ...editingTopic,
-              name: newTopicName,
-              color: newTopicColor,
-            });
-          } else {
-            // Create new topic
-            await db.add("topics", {
-              name: newTopicName,
-              color: newTopicColor,
-            });
-          }
-
-          setShowAddModal(false);
-          await loadTopics();
-        };
-
-        const handleDeleteTopic = async (topicId) => {
-          if (topicId <= 4) {
-            alert("Cannot delete default topics");
-            return;
-          }
-
-          // Check if topic is in use
-          const threadsIndex = db.transaction("threads").store.index("topicId");
-          const threadsWithTopic = await threadsIndex.count(
-            IDBKeyRange.only(topicId)
-          );
-
-          const actionsIndex = db.transaction("actions").store.index("topicId");
-          const actionsWithTopic = await actionsIndex.count(
-            IDBKeyRange.only(topicId)
-          );
-
-          if (threadsWithTopic > 0 || actionsWithTopic > 0) {
-            const confirmed = window.confirm(
-              `This topic is used by ${threadsWithTopic} threads and ${actionsWithTopic} actions. Delete anyway? (Items will be moved to "All" topic)`
-            );
-
-            if (!confirmed) return;
-
-            // Move threads to "All" topic
-            const allThreads = await threadsIndex.getAll(
-              IDBKeyRange.only(topicId)
-            );
-            for (const thread of allThreads) {
-              thread.topicId = 1; // "All" topic
-              await db.put("threads", thread);
-            }
-
-            // Move actions to "All" topic
-            const allActions = await actionsIndex.getAll(
-              IDBKeyRange.only(topicId)
-            );
-            for (const action of allActions) {
-              action.topicId = 1; // "All" topic
-              await db.put("actions", action);
-            }
-          }
-
-          // Delete the topic
-          await db.delete("topics", topicId);
-          await loadTopics();
-        };
-
-        return (
-          <div className="max-w-7xl mx-auto px-4 py-6 animate-fade-in">
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-2xl font-bold text-secondary-900 dark:text-secondary-100">
-                Manage Topics
-              </h2>
-              <button
-                onClick={openAddModal}
-                className="flex items-center px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  className="h-5 w-5 mr-1"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M12 4v16m8-8H4"
-                  />
-                </svg>
-                New Topic
-              </button>
-            </div>
-
-            {loading ? (
-              <div className="flex justify-center py-8">
-                <div className="w-10 h-10 border-4 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                {topics.map((topic) => (
-                  <div
-                    key={topic.id}
-                    className="bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-4 flex items-center justify-between"
-                  >
-                    <div className="flex items-center">
-                      <div
-                        className="w-6 h-6 rounded-full mr-3"
-                        style={{ backgroundColor: topic.color }}
-                      ></div>
-                      <span className="text-secondary-900 dark:text-secondary-100 font-medium">
-                        {topic.name}
-                      </span>
-                    </div>
-
-                    <div className="flex space-x-2">
-                      <button
-                        onClick={() => openEditModal(topic)}
-                        className="text-secondary-500 hover:text-secondary-700 dark:text-secondary-400 dark:hover:text-secondary-200 p-2"
-                      >
-                        <svg
-                          xmlns="http://www.w3.org/2000/svg"
-                          className="h-5 w-5"
-                          fill="none"
-                          viewBox="0 0 24 24"
-                          stroke="currentColor"
-                        >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth={2}
-                            d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-                          />
-                        </svg>
-                      </button>
-                      {topic.id > 4 && (
-                        <button
-                          onClick={() => handleDeleteTopic(topic.id)}
-                          className="text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 p-2"
-                        >
-                          <svg
-                            xmlns="http://www.w3.org/2000/svg"
-                            className="h-5 w-5"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              strokeWidth={2}
-                              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                            />
-                          </svg>
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Add/Edit Topic Modal */}
-            {showAddModal && (
-              <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-                <div className="bg-white dark:bg-secondary-800 rounded-lg shadow-lg p-6 w-full max-w-md">
-                  <h3 className="text-lg font-semibold text-secondary-900 dark:text-secondary-100 mb-4">
-                    {editingTopic ? "Edit Topic" : "Add New Topic"}
-                  </h3>
-
-                  <div className="space-y-4">
-                    <div>
-                      <label
-                        htmlFor="topicName"
-                        className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1"
-                      >
-                        Topic Name
-                      </label>
-                      <input
-                        id="topicName"
-                        type="text"
-                        value={newTopicName}
-                        onChange={(e) => setNewTopicName(e.target.value)}
-                        className="w-full px-4 py-2 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                        placeholder="Enter topic name"
-                      />
-                    </div>
-
-                    <div>
-                      <label
-                        htmlFor="topicColor"
-                        className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1"
-                      >
-                        Topic Color
-                      </label>
-                      <div className="flex items-center">
-                        <input
-                          id="topicColor"
-                          type="color"
-                          value={newTopicColor}
-                          onChange={(e) => setNewTopicColor(e.target.value)}
-                          className="w-10 h-10 rounded-lg border border-secondary-200 dark:border-secondary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent mr-3"
-                        />
-                        <input
-                          type="text"
-                          value={newTopicColor}
-                          onChange={(e) => setNewTopicColor(e.target.value)}
-                          className="w-full px-4 py-2 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                          placeholder="#RRGGBB"
-                        />
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex justify-end space-x-3 mt-6">
-                    <button
-                      onClick={() => setShowAddModal(false)}
-                      className="px-4 py-2 text-secondary-700 dark:text-secondary-300 hover:bg-secondary-100 dark:hover:bg-secondary-700 rounded-lg"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      onClick={handleSaveTopic}
-                      className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
-                    >
-                      {editingTopic ? "Save Changes" : "Add Topic"}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        );
-      }
-
-      // Utility functions for date formatting
-      function formatDate(dateString) {
-        const date = new Date(dateString);
-        return date.toLocaleDateString(undefined, {
-          year: "numeric",
-          month: "short",
-          day: "numeric",
-        });
-      }
-
-      function formatDateTime(dateString) {
-        const date = new Date(dateString);
-        return date.toLocaleDateString(undefined, {
-          year: "numeric",
-          month: "short",
-          day: "numeric",
-          hour: "2-digit",
-          minute: "2-digit",
-        });
-      }
-
-      // Thread detail view component
-      function ThreadDetail({ db, thread, navigateTo }) {
-        const [updates, setUpdates] = React.useState([]);
-        const [loading, setLoading] = React.useState(true);
-        const [newUpdate, setNewUpdate] = React.useState("");
-        const [topics, setTopics] = React.useState([]);
-
-        React.useEffect(() => {
-          async function loadData() {
-            setLoading(true);
-
-            // Load topics
-            const allTopics = await db.getAll("topics");
-            setTopics(allTopics);
-
-            // Load thread updates
-            await loadUpdates();
-
-            setLoading(false);
-          }
-
-          loadData();
-        }, [db, thread]);
-
-        async function loadUpdates() {
-          const index = db.transaction("threadUpdates").store.index("threadId");
-          const threadUpdates = await index.getAll(IDBKeyRange.only(thread.id));
-
-          // Sort by timestamp, newest first
-          threadUpdates.sort(
-            (a, b) => new Date(b.timestamp) - new Date(a.timestamp)
-          );
-
-          setUpdates(threadUpdates);
-        }
-
-        const handleNewUpdate = async (e) => {
-          e.preventDefault();
-          if (!newUpdate.trim()) return;
-
-          const update = {
-            threadId: thread.id,
-            content: newUpdate,
-            timestamp: new Date().toISOString(),
-          };
-
-          await db.add("threadUpdates", update);
-          setNewUpdate("");
-          await loadUpdates();
-        };
-
-        const getTopic = () => {
-          return (
-            topics.find((t) => t.id === thread.topicId) || {
-              name: "Unknown",
-              color: "#64748b",
-            }
-          );
-        };
-
-        const topic = getTopic();
-
-        return (
-          <div className="max-w-7xl mx-auto px-4 py-6 animate-fade-in">
-            <div className="flex items-center mb-6">
-              <button
-                onClick={() => navigateTo("home")}
-                className="mr-3 text-secondary-600 dark:text-secondary-400 hover:text-secondary-900 dark:hover:text-secondary-200"
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  className="h-6 w-6"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M10 19l-7-7m0 0l7-7m-7 7h18"
-                  />
-                </svg>
-              </button>
-              <h2 className="text-2xl font-bold text-secondary-900 dark:text-secondary-100 truncate">
-                {thread.title}
-              </h2>
-            </div>
-
-            <div className="bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-4 mb-6">
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center">
-                  <span
-                    className="px-3 py-1 text-sm rounded-full"
-                    style={{
-                      backgroundColor: `${topic.color}20`,
-                      color: topic.color,
-                    }}
-                  >
-                    {topic.name}
-                  </span>
-                  <span className="ml-3 text-sm text-secondary-600 dark:text-secondary-400">
-                    Created: {formatDate(thread.createdAt)}
-                  </span>
-                </div>
-              </div>
-
-              {thread.description && (
-                <p className="text-secondary-700 dark:text-secondary-300 text-sm">
-                  {thread.description}
-                </p>
-              )}
-            </div>
-
-            {/* New update form */}
-            <form onSubmit={handleNewUpdate} className="mb-6">
-              <label
-                htmlFor="newUpdate"
-                className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1"
-              >
-                Add a new update
-              </label>
-              <div className="flex">
-                <textarea
-                  id="newUpdate"
-                  rows="3"
-                  value={newUpdate}
-                  onChange={(e) => setNewUpdate(e.target.value)}
-                  placeholder="What's on your mind?"
-                  className="flex-grow px-4 py-3 rounded-l-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                ></textarea>
-                <button
-                  type="submit"
-                  className="px-4 py-3 rounded-r-lg bg-primary-500 text-white hover:bg-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
-                >
-                  Add
-                </button>
-              </div>
-            </form>
-
-            {/* Updates timeline */}
-            <div>
-              <h3 className="text-lg font-semibold text-secondary-900 dark:text-secondary-100 mb-4">
-                Thread Updates
-              </h3>
-
-              {loading ? (
-                <div className="flex justify-center py-8">
-                  <div className="w-8 h-8 border-4 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
-                </div>
-              ) : updates.length > 0 ? (
-                <div className="space-y-6">
-                  {updates.map((update) => (
-                    <div
-                      key={update.id}
-                      className="bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-5 border-l-2 border-primary-500"
-                    >
-                      <div className="text-xs text-secondary-500 dark:text-secondary-400 mb-2">
-                        {formatDateTime(update.timestamp)}
-                      </div>
-                      <div className="text-secondary-900 dark:text-secondary-100 whitespace-pre-wrap">
-                        {update.content}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-center py-8 text-secondary-600 dark:text-secondary-400">
-                  No updates yet. Add your first update above.
-                </div>
-              )}
-            </div>
-          </div>
-        );
-      }
-
-      // New thread component
-      function NewThread({ db, navigateTo }) {
-        const [title, setTitle] = React.useState("");
-        const [description, setDescription] = React.useState("");
-        const [selectedTopic, setSelectedTopic] = React.useState(1); // Default to "All" topic
-        const [topics, setTopics] = React.useState([]);
-
-        React.useEffect(() => {
-          async function loadTopics() {
-            const allTopics = await db.getAll("topics");
-            setTopics(allTopics);
-          }
-
-          loadTopics();
-        }, [db]);
-
-        const handleSubmit = async (e) => {
-          e.preventDefault();
-
-          if (!title.trim()) {
-            alert("Please enter a title for the thread");
-            return;
-          }
-
-          try {
-            // Create new thread
-            const thread = {
-              title,
-              description,
-              topicId: parseInt(selectedTopic),
-              createdAt: new Date().toISOString(),
-            };
-
-            const threadId = await db.add("threads", thread);
-
-            // Navigate to the new thread
-            navigateTo("thread", { id: threadId, ...thread });
-          } catch (error) {
-            console.error("Error creating thread:", error);
-            alert("Error creating thread. Please try again.");
-          }
-        };
-
-        return (
-          <div className="max-w-7xl mx-auto px-4 py-6 animate-fade-in">
-            <div className="flex items-center mb-6">
-              <button
-                onClick={() => navigateTo("home")}
-                className="mr-3 text-secondary-600 dark:text-secondary-400 hover:text-secondary-900 dark:hover:text-secondary-200"
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  className="h-6 w-6"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M10 19l-7-7m0 0l7-7m-7 7h18"
-                  />
-                </svg>
-              </button>
-              <h2 className="text-2xl font-bold text-secondary-900 dark:text-secondary-100">
-                Create New Thread
-              </h2>
-            </div>
-
-            <div className="bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-6">
-              <form onSubmit={handleSubmit} className="space-y-6">
-                <div>
-                  <label
-                    htmlFor="title"
-                    className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1"
-                  >
-                    Thread Title
-                  </label>
-                  <input
-                    id="title"
-                    type="text"
-                    value={title}
-                    onChange={(e) => setTitle(e.target.value)}
-                    className="w-full px-4 py-2 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                    placeholder="Enter a title for your thread"
-                    required
-                  />
-                </div>
-
-                <div>
-                  <label
-                    htmlFor="topic"
-                    className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1"
-                  >
-                    Topic
-                  </label>
-                  <select
-                    id="topic"
-                    value={selectedTopic}
-                    onChange={(e) => setSelectedTopic(e.target.value)}
-                    className="w-full px-4 py-2 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                  >
-                    {topics.map((topic) => (
-                      <option key={topic.id} value={topic.id}>
-                        {topic.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label
-                    htmlFor="description"
-                    className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1"
-                  >
-                    Description (Optional)
-                  </label>
-                  <textarea
-                    id="description"
-                    rows="3"
-                    value={description}
-                    onChange={(e) => setDescription(e.target.value)}
-                    className="w-full px-4 py-2 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                    placeholder="Enter an optional description"
-                  ></textarea>
-                </div>
-
-                <div className="flex justify-end space-x-3">
-                  <button
-                    type="button"
-                    onClick={() => navigateTo("home")}
-                    className="px-4 py-2 text-secondary-700 dark:text-secondary-300 hover:bg-secondary-100 dark:hover:bg-secondary-700 rounded-lg"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
-                  >
-                    Create Thread
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        );
-      }
-
-      // Actions list component
-      function ActionsList({ db, navigateTo }) {
-        const [topics, setTopics] = React.useState([]);
-        const [selectedTopic, setSelectedTopic] = React.useState(0); // 0 means "All topics"
-        const [actions, setActions] = React.useState([]);
-        const [filteredStatus, setFilteredStatus] = React.useState("all"); // "all", "pending", "completed", "delayed", "discarded", "delegated"
-        const [loading, setLoading] = React.useState(true);
-        const [newAction, setNewAction] = React.useState("");
-        const [newActionTopic, setNewActionTopic] = React.useState(1); // Default to "All" topic
-
-        React.useEffect(() => {
-          loadData();
-        }, [db, selectedTopic, filteredStatus]);
-
-        async function loadData() {
-          setLoading(true);
-
-          // Load topics
-          const allTopics = await db.getAll("topics");
-          setTopics(allTopics);
-
-          // Load actions
-          await loadActions();
-
-          setLoading(false);
-        }
-
-        async function loadActions() {
-          let allActions = [];
-
-          // Filter by topic if selected
-          if (selectedTopic === 0) {
-            allActions = await db.getAll("actions");
-          } else {
-            const index = db.transaction("actions").store.index("topicId");
-            allActions = await index.getAll(IDBKeyRange.only(selectedTopic));
-          }
-
-          // Filter by status if selected
-          if (filteredStatus !== "all") {
-            allActions = allActions.filter(
-              (action) => action.status === filteredStatus
-            );
-          }
-
-          // Sort by created date, most recent first
-          allActions.sort(
-            (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
-          );
-
-          // Mark untouched actions (older than a day with pending status)
-          const oneDayAgo = new Date();
-          oneDayAgo.setDate(oneDayAgo.getDate() - 1);
-
-          const processedActions = allActions.map((action) => {
-            const createdAt = new Date(action.createdAt);
-            if (createdAt < oneDayAgo && action.status === "pending") {
-              return { ...action, untouched: true };
-            }
-            return action;
-          });
-
-          setActions(processedActions);
-        }
-
-        const handleNewAction = async (e) => {
-          e.preventDefault();
-          if (!newAction.trim()) return;
-
-          const action = {
-            text: newAction,
-            status: "pending",
-            topicId: parseInt(newActionTopic),
-            createdAt: new Date().toISOString(),
-            due: null,
-          };
-
-          await db.add("actions", action);
-          setNewAction("");
-          await loadActions();
-        };
-
-        const handleStatusChange = async (actionId, newStatus) => {
-          const action = await db.get("actions", actionId);
-          action.status = newStatus;
-          action.completedAt =
-            newStatus === "completed" ? new Date().toISOString() : null;
-
-          await db.put("actions", action);
-          await loadActions();
-        };
-
-        // Count actions by status for the badge counters
-        const countByStatus = (status) => {
-          if (status === "all") return actions.length;
-          return actions.filter((action) => action.status === status).length;
-        };
-
-        return (
-          <div className="max-w-7xl mx-auto px-4 py-6 animate-fade-in">
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-2xl font-bold text-secondary-900 dark:text-secondary-100">
-                Actions
-              </h2>
-            </div>
-
-            {/* Quick action entry */}
-            <form onSubmit={handleNewAction} className="mb-6">
-              <div className="grid grid-cols-4 gap-2">
-                <div className="col-span-3">
-                  <input
-                    type="text"
-                    value={newAction}
-                    onChange={(e) => setNewAction(e.target.value)}
-                    placeholder="Add a new action..."
-                    className="w-full px-4 py-3 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                  />
-                </div>
-                <div className="col-span-1 flex">
-                  <select
-                    value={newActionTopic}
-                    onChange={(e) => setNewActionTopic(e.target.value)}
-                    className="w-full px-2 py-3 rounded-l-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent text-sm"
-                  >
-                    {topics.map((topic) => (
-                      <option key={topic.id} value={topic.id}>
-                        {topic.name}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    type="submit"
-                    className="px-4 py-3 rounded-r-lg bg-primary-500 text-white hover:bg-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
-                  >
-                    Add
-                  </button>
-                </div>
-              </div>
-            </form>
-
-            {/* Topic filter */}
-            <div className="overflow-x-auto pb-3 mb-4">
-              <div className="flex space-x-2 w-max">
-                <button
-                  onClick={() => setSelectedTopic(0)}
-                  className={`px-4 py-2 rounded-full text-sm font-medium transition ${
-                    selectedTopic === 0
-                      ? "bg-primary-100 text-primary-800 dark:bg-primary-800 dark:text-primary-100"
-                      : "bg-white text-secondary-700 dark:bg-secondary-800 dark:text-secondary-300"
-                  } shadow-sm`}
-                >
-                  All Topics
-                </button>
-
-                {topics.map((topic) => (
-                  <button
-                    key={topic.id}
-                    onClick={() => setSelectedTopic(topic.id)}
-                    className={`px-4 py-2 rounded-full text-sm font-medium transition ${
-                      selectedTopic === topic.id
-                        ? "bg-primary-100 text-primary-800 dark:bg-primary-800 dark:text-primary-100"
-                        : "bg-white text-secondary-700 dark:bg-secondary-800 dark:text-secondary-300"
-                    } shadow-sm`}
-                    style={
-                      selectedTopic === topic.id
-                        ? {
-                            backgroundColor: `${topic.color}20`,
-                            color: topic.color,
-                          }
-                        : {}
-                    }
-                  >
-                    {topic.name}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Status filter */}
-            <div className="overflow-x-auto pb-3 mb-6">
-              <div className="flex space-x-2 w-max">
-                <button
-                  onClick={() => setFilteredStatus("all")}
-                  className={`px-4 py-2 rounded-full text-sm font-medium flex items-center ${
-                    filteredStatus === "all"
-                      ? "bg-secondary-200 text-secondary-800 dark:bg-secondary-700 dark:text-secondary-100"
-                      : "bg-white text-secondary-700 dark:bg-secondary-800 dark:text-secondary-300"
-                  } shadow-sm`}
-                >
-                  <span>All</span>
-                  <span className="ml-1 px-1.5 py-0.5 text-xs bg-secondary-300 dark:bg-secondary-600 rounded-full">
-                    {countByStatus("all")}
-                  </span>
-                </button>
-
-                <button
-                  onClick={() => setFilteredStatus("pending")}
-                  className={`px-4 py-2 rounded-full text-sm font-medium flex items-center ${
-                    filteredStatus === "pending"
-                      ? "bg-secondary-200 text-secondary-800 dark:bg-secondary-700 dark:text-secondary-100"
-                      : "bg-white text-secondary-700 dark:bg-secondary-800 dark:text-secondary-300"
-                  } shadow-sm`}
-                >
-                  <span>Pending</span>
-                  <span className="ml-1 px-1.5 py-0.5 text-xs bg-secondary-300 dark:bg-secondary-600 rounded-full">
-                    {countByStatus("pending")}
-                  </span>
-                </button>
-
-                <button
-                  onClick={() => setFilteredStatus("completed")}
-                  className={`px-4 py-2 rounded-full text-sm font-medium flex items-center ${
-                    filteredStatus === "completed"
-                      ? "bg-accent-100 text-accent-800 dark:bg-accent-800 dark:text-accent-100"
-                      : "bg-white text-secondary-700 dark:bg-secondary-800 dark:text-secondary-300"
-                  } shadow-sm`}
-                >
-                  <span>Completed</span>
-                  <span className="ml-1 px-1.5 py-0.5 text-xs bg-accent-200 dark:bg-accent-700 rounded-full">
-                    {countByStatus("completed")}
-                  </span>
-                </button>
-
-                <button
-                  onClick={() => setFilteredStatus("delayed")}
-                  className={`px-4 py-2 rounded-full text-sm font-medium flex items-center ${
-                    filteredStatus === "delayed"
-                      ? "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-100"
-                      : "bg-white text-secondary-700 dark:bg-secondary-800 dark:text-secondary-300"
-                  } shadow-sm`}
-                >
-                  <span>Delayed</span>
-                  <span className="ml-1 px-1.5 py-0.5 text-xs bg-orange-200 dark:bg-orange-800 rounded-full">
-                    {countByStatus("delayed")}
-                  </span>
-                </button>
-
-                <button
-                  onClick={() => setFilteredStatus("discarded")}
-                  className={`px-4 py-2 rounded-full text-sm font-medium flex items-center ${
-                    filteredStatus === "discarded"
-                      ? "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-100"
-                      : "bg-white text-secondary-700 dark:bg-secondary-800 dark:text-secondary-300"
-                  } shadow-sm`}
-                >
-                  <span>Discarded</span>
-                  <span className="ml-1 px-1.5 py-0.5 text-xs bg-red-200 dark:bg-red-800 rounded-full">
-                    {countByStatus("discarded")}
-                  </span>
-                </button>
-
-                <button
-                  onClick={() => setFilteredStatus("delegated")}
-                  className={`px-4 py-2 rounded-full text-sm font-medium flex items-center ${
-                    filteredStatus === "delegated"
-                      ? "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-100"
-                      : "bg-white text-secondary-700 dark:bg-secondary-800 dark:text-secondary-300"
-                  } shadow-sm`}
-                >
-                  <span>Delegated</span>
-                  <span className="ml-1 px-1.5 py-0.5 text-xs bg-blue-200 dark:bg-blue-800 rounded-full">
-                    {countByStatus("delegated")}
-                  </span>
-                </button>
-              </div>
-            </div>
-
-            {loading ? (
-              <div className="flex justify-center py-8">
-                <div className="w-10 h-10 border-4 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
-              </div>
-            ) : actions.length > 0 ? (
-              <div className="space-y-3">
-                {actions.map((action) => {
-                  const topic = topics.find((t) => t.id === action.topicId) || {
-                    name: "Unknown",
-                    color: "#64748b",
-                  };
-
-                  return (
-                    <div
-                      key={action.id}
-                      className={`bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-4 ${
-                        action.status === "completed"
-                          ? "border-l-4 border-accent-500"
-                          : action.status === "delayed"
-                          ? "border-l-4 border-orange-500"
-                          : action.status === "discarded"
-                          ? "border-l-4 border-red-500"
-                          : action.status === "delegated"
-                          ? "border-l-4 border-blue-500"
-                          : action.untouched
-                          ? "border-l-4 border-red-500"
-                          : "border-l-4 border-secondary-300 dark:border-secondary-600"
-                      }`}
-                    >
-                      <div className="flex items-start">
-                        {action.status === "pending" && (
-                          <button
-                            onClick={() =>
-                              handleStatusChange(action.id, "completed")
-                            }
-                            className="w-6 h-6 rounded-full border-2 border-secondary-300 dark:border-secondary-500 hover:border-accent-500 dark:hover:border-accent-400 mr-3 flex-shrink-0 mt-0.5"
-                            aria-label="Mark as completed"
-                          ></button>
-                        )}
-
-                        {action.status === "completed" && (
-                          <div className="w-6 h-6 rounded-full bg-accent-500 mr-3 flex-shrink-0 mt-0.5 flex items-center justify-center">
-                            <svg
-                              xmlns="http://www.w3.org/2000/svg"
-                              className="h-4 w-4 text-white"
-                              fill="none"
-                              viewBox="0 0 24 24"
-                              stroke="currentColor"
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                strokeWidth={2}
-                                d="M5 13l4 4L19 7"
-                              />
-                            </svg>
-                          </div>
-                        )}
-
-                        {(action.status === "delayed" ||
-                          action.status === "discarded" ||
-                          action.status === "delegated") && (
-                          <div className="w-6 h-6 mr-3 flex-shrink-0 mt-0.5"></div>
-                        )}
-
-                        <div className="flex-grow">
-                          <div className="flex justify-between items-start">
-                            <p
-                              className={`text-secondary-900 dark:text-secondary-100 ${
-                                action.status === "completed" ||
-                                action.status === "discarded"
-                                  ? "line-through opacity-70"
-                                  : ""
-                              }`}
-                            >
-                              {action.text}
-                            </p>
-                            <span
-                              className="ml-3 px-2 py-1 text-xs rounded-full flex-shrink-0"
-                              style={{
-                                backgroundColor: `${topic.color}20`,
-                                color: topic.color,
-                              }}
-                            >
-                              {topic.name}
-                            </span>
-                          </div>
-
-                          <div className="flex items-center mt-2 text-sm">
-                            <span className="text-secondary-500 dark:text-secondary-400">
-                              {formatDate(action.createdAt)}
-                            </span>
-
-                            {action.untouched &&
-                              action.status === "pending" && (
-                                <span className="ml-3 text-xs font-medium text-red-600 dark:text-red-400">
-                                  Untouched for over a day
-                                </span>
-                              )}
-
-                            {action.status !== "pending" && (
-                              <span
-                                className={`ml-3 px-2 py-0.5 text-xs rounded-full ${
-                                  action.status === "completed"
-                                    ? "bg-accent-100 text-accent-800 dark:bg-accent-900 dark:text-accent-100"
-                                    : action.status === "delayed"
-                                    ? "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-100"
-                                    : action.status === "discarded"
-                                    ? "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-100"
-                                    : "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-100"
-                                }`}
-                              >
-                                {action.status.charAt(0).toUpperCase() +
-                                  action.status.slice(1)}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-
-                        {action.status === "pending" && (
-                          <div className="flex space-x-1 ml-2">
-                            <button
-                              onClick={() =>
-                                handleStatusChange(action.id, "delayed")
-                              }
-                              className="text-orange-500 hover:text-orange-600 dark:hover:text-orange-400 p-2"
-                              title="Delay"
-                            >
-                              <svg
-                                xmlns="http://www.w3.org/2000/svg"
-                                className="h-5 w-5"
-                                fill="none"
-                                viewBox="0 0 24 24"
-                                stroke="currentColor"
-                              >
-                                <path
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  strokeWidth={2}
-                                  d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
-                                />
-                              </svg>
-                            </button>
-                            <button
-                              onClick={() =>
-                                handleStatusChange(action.id, "discarded")
-                              }
-                              className="text-red-500 hover:text-red-600 dark:hover:text-red-400 p-2"
-                              title="Discard"
-                            >
-                              <svg
-                                xmlns="http://www.w3.org/2000/svg"
-                                className="h-5 w-5"
-                                fill="none"
-                                viewBox="0 0 24 24"
-                                stroke="currentColor"
-                              >
-                                <path
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  strokeWidth={2}
-                                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                                />
-                              </svg>
-                            </button>
-                            <button
-                              onClick={() =>
-                                handleStatusChange(action.id, "delegated")
-                              }
-                              className="text-blue-500 hover:text-blue-600 dark:hover:text-blue-400 p-2"
-                              title="Delegate"
-                            >
-                              <svg
-                                xmlns="http://www.w3.org/2000/svg"
-                                className="h-5 w-5"
-                                fill="none"
-                                viewBox="0 0 24 24"
-                                stroke="currentColor"
-                              >
-                                <path
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  strokeWidth={2}
-                                  d="M7 11.5V14m0-2.5v-6a1.5 1.5 0 113 0m-3 6a1.5 1.5 0 00-3 0v2a7.5 7.5 0 0015 0v-5a1.5 1.5 0 00-3 0m-6-3V11m0-5.5v-1a1.5 1.5 0 013 0v1m0 0V11m0-5.5a1.5 1.5 0 013 0v3m0 0V11"
-                                />
-                              </svg>
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-6 text-center">
-                <p className="text-secondary-600 dark:text-secondary-400">
-                  No actions found with the selected filters.
-                </p>
-              </div>
-            )}
-          </div>
-        );
-      }
-
-      // Action generators component
-      function ActionGenerators({ db, navigateTo }) {
-        const [generators, setGenerators] = React.useState([]);
-        const [topics, setTopics] = React.useState([]);
-        const [loading, setLoading] = React.useState(true);
-        const [showModal, setShowModal] = React.useState(false);
-        const [editingGenerator, setEditingGenerator] = React.useState(null);
-
-        // Form state
-        const [text, setText] = React.useState("");
-        const [frequency, setFrequency] = React.useState("daily");
-        const [topicId, setTopicId] = React.useState(1);
-        const [dayOfWeek, setDayOfWeek] = React.useState(1);
-        const [dayOfMonth, setDayOfMonth] = React.useState(1);
-        const [customPattern, setCustomPattern] = React.useState("");
-
-        React.useEffect(() => {
-          loadData();
-        }, [db]);
-
-        async function loadData() {
-          setLoading(true);
-
-          // Load topics
-          const allTopics = await db.getAll("topics");
-          setTopics(allTopics);
-
-          // Load generators
-          const allGenerators = await db.getAll("actionGenerators");
-          setGenerators(allGenerators);
-
-          setLoading(false);
-        }
-
-        const openModal = (generator = null) => {
-          if (generator) {
-            setEditingGenerator(generator);
-            setText(generator.text);
-            setFrequency(generator.frequency);
-            setTopicId(generator.topicId);
-            setDayOfWeek(generator.dayOfWeek || 1);
-            setDayOfMonth(generator.dayOfMonth || 1);
-            setCustomPattern(generator.customPattern || "");
-          } else {
-            setEditingGenerator(null);
-            setText("");
-            setFrequency("daily");
-            setTopicId(1);
-            setDayOfWeek(1);
-            setDayOfMonth(1);
-            setCustomPattern("");
-          }
-
-          setShowModal(true);
-        };
-
-        const handleSaveGenerator = async () => {
-          if (!text.trim()) {
-            alert("Please enter text for the action");
-            return;
-          }
-
-          const generator = {
-            text,
-            frequency,
-            topicId: parseInt(topicId),
-            lastGenerated: null,
-          };
-
-          if (frequency === "weekly") {
-            generator.dayOfWeek = parseInt(dayOfWeek);
-          } else if (frequency === "monthly") {
-            generator.dayOfMonth = parseInt(dayOfMonth);
-          } else if (frequency === "custom") {
-            generator.customPattern = customPattern;
-          }
-
-          try {
-            if (editingGenerator) {
-              await db.put("actionGenerators", {
-                ...generator,
-                id: editingGenerator.id,
-              });
-            } else {
-              await db.add("actionGenerators", generator);
-            }
-
-            setShowModal(false);
-            await loadData();
-          } catch (error) {
-            console.error("Error saving generator:", error);
-            alert("Error saving generator. Please try again.");
-          }
-        };
-
-        const handleDeleteGenerator = async (id) => {
-          const confirmed = window.confirm(
-            "Are you sure you want to delete this generator?"
-          );
-
-          if (confirmed) {
-            try {
-              await db.delete("actionGenerators", id);
-              await loadData();
-            } catch (error) {
-              console.error("Error deleting generator:", error);
-              alert("Error deleting generator. Please try again.");
-            }
-          }
-        };
-
-        const handleRunGenerator = async (generator) => {
-          try {
-            // Create a new action from this generator
-            const action = {
-              text: generator.text,
-              status: "pending",
-              topicId: generator.topicId,
-              createdAt: new Date().toISOString(),
-              generatedFrom: generator.id,
-            };
-
-            await db.add("actions", action);
-
-            // Update last generated timestamp
-            generator.lastGenerated = new Date().toISOString();
-            await db.put("actionGenerators", generator);
-
-            await loadData();
-
-            alert("Action generated successfully!");
-          } catch (error) {
-            console.error("Error generating action:", error);
-            alert("Error generating action. Please try again.");
-          }
-        };
-
-        const getFrequencyDisplay = (generator) => {
-          switch (generator.frequency) {
-            case "daily":
-              return "Every day";
-            case "weekly":
-              return `Every week on ${getDayName(generator.dayOfWeek)}`;
-            case "monthly":
-              return `Monthly on day ${generator.dayOfMonth}`;
-            case "custom":
-              return `Custom: ${generator.customPattern}`;
-            default:
-              return generator.frequency;
-          }
-        };
-
-        const getDayName = (day) => {
-          const days = [
-            "Sunday",
-            "Monday",
-            "Tuesday",
-            "Wednesday",
-            "Thursday",
-            "Friday",
-            "Saturday",
-          ];
-          return days[day % 7];
-        };
-
-        const renderFrequencyOptions = () => {
-          switch (frequency) {
-            case "weekly":
-              return (
-                <div>
-                  <label className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1">
-                    Day of Week
-                  </label>
-                  <select
-                    value={dayOfWeek}
-                    onChange={(e) => setDayOfWeek(e.target.value)}
-                    className="w-full px-4 py-2 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                  >
-                    <option value="0">Sunday</option>
-                    <option value="1">Monday</option>
-                    <option value="2">Tuesday</option>
-                    <option value="3">Wednesday</option>
-                    <option value="4">Thursday</option>
-                    <option value="5">Friday</option>
-                    <option value="6">Saturday</option>
-                  </select>
-                </div>
-              );
-            case "monthly":
-              return (
-                <div>
-                  <label className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1">
-                    Day of Month
-                  </label>
-                  <select
-                    value={dayOfMonth}
-                    onChange={(e) => setDayOfMonth(e.target.value)}
-                    className="w-full px-4 py-2 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                  >
-                    {Array.from({ length: 31 }, (_, i) => (
-                      <option key={i} value={i + 1}>
-                        {i + 1}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              );
-            case "custom":
-              return (
-                <div>
-                  <label className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1">
-                    Custom Pattern
-                  </label>
-                  <input
-                    type="text"
-                    value={customPattern}
-                    onChange={(e) => setCustomPattern(e.target.value)}
-                    className="w-full px-4 py-2 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                    placeholder="e.g. First Monday of month"
-                  />
-                  <p className="mt-1 text-xs text-secondary-500 dark:text-secondary-400">
-                    Enter a human-readable description of your pattern
-                  </p>
-                </div>
-              );
-            default:
-              return null;
-          }
-        };
-
-        return (
-          <div className="max-w-7xl mx-auto px-4 py-6 animate-fade-in">
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-2xl font-bold text-secondary-900 dark:text-secondary-100">
-                Action Generators
-              </h2>
-              <button
-                onClick={() => openModal()}
-                className="flex items-center px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  className="h-5 w-5 mr-1"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M12 4v16m8-8H4"
-                  />
-                </svg>
-                New Generator
-              </button>
-            </div>
-
-            {loading ? (
-              <div className="flex justify-center py-8">
-                <div className="w-10 h-10 border-4 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
-              </div>
-            ) : generators.length > 0 ? (
-              <div className="space-y-4">
-                {generators.map((generator) => {
-                  const topic = topics.find(
-                    (t) => t.id === generator.topicId
-                  ) || { name: "Unknown", color: "#64748b" };
-
-                  return (
-                    <div
-                      key={generator.id}
-                      className="bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-5"
-                    >
-                      <div className="flex justify-between items-start">
-                        <div>
-                          <h3 className="text-lg font-medium text-secondary-900 dark:text-secondary-100 mb-1">
-                            {generator.text}
-                          </h3>
-                          <div className="flex items-center text-sm text-secondary-600 dark:text-secondary-400 mb-3">
-                            <span
-                              className="px-2 py-1 text-xs rounded-full mr-2"
-                              style={{
-                                backgroundColor: `${topic.color}20`,
-                                color: topic.color,
-                              }}
-                            >
-                              {topic.name}
-                            </span>
-                            <span>{getFrequencyDisplay(generator)}</span>
-                          </div>
-
-                          {generator.lastGenerated && (
-                            <div className="text-xs text-secondary-500 dark:text-secondary-400">
-                              Last generated:{" "}
-                              {formatDate(generator.lastGenerated)}
-                            </div>
-                          )}
-                        </div>
-
-                        <div className="flex space-x-2">
-                          <button
-                            onClick={() => handleRunGenerator(generator)}
-                            className="text-primary-600 hover:text-primary-800 dark:text-primary-400 dark:hover:text-primary-300 px-3 py-1 rounded border border-primary-200 dark:border-primary-700"
-                            title="Run Now"
-                          >
-                            Run Now
-                          </button>
-                          <button
-                            onClick={() => openModal(generator)}
-                            className="text-secondary-600 hover:text-secondary-800 dark:text-secondary-400 dark:hover:text-secondary-200 p-1"
-                            title="Edit"
-                          >
-                            <svg
-                              xmlns="http://www.w3.org/2000/svg"
-                              className="h-5 w-5"
-                              fill="none"
-                              viewBox="0 0 24 24"
-                              stroke="currentColor"
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                strokeWidth={2}
-                                d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-                              />
-                            </svg>
-                          </button>
-                          <button
-                            onClick={() => handleDeleteGenerator(generator.id)}
-                            className="text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-300 p-1"
-                            title="Delete"
-                          >
-                            <svg
-                              xmlns="http://www.w3.org/2000/svg"
-                              className="h-5 w-5"
-                              fill="none"
-                              viewBox="0 0 24 24"
-                              stroke="currentColor"
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                strokeWidth={2}
-                                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                              />
-                            </svg>
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-6 text-center">
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  className="h-12 w-12 mx-auto text-secondary-400"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
-                  />
-                </svg>
-                <h3 className="mt-4 text-lg font-medium text-secondary-900 dark:text-secondary-100">
-                  No Action Generators
-                </h3>
-                <p className="mt-2 text-secondary-600 dark:text-secondary-400">
-                  Create a generator to automatically create recurring actions.
-                </p>
-                <button
-                  onClick={() => openModal()}
-                  className="mt-4 px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
-                >
-                  Create Your First Generator
-                </button>
-              </div>
-            )}
-
-            {/* Add/Edit Generator Modal */}
-            {showModal && (
-              <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-                <div className="bg-white dark:bg-secondary-800 rounded-lg shadow-lg p-6 w-full max-w-md">
-                  <h3 className="text-lg font-semibold text-secondary-900 dark:text-secondary-100 mb-4">
-                    {editingGenerator
-                      ? "Edit Action Generator"
-                      : "New Action Generator"}
-                  </h3>
-
-                  <div className="space-y-4">
-                    <div>
-                      <label className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1">
-                        Action Text
-                      </label>
-                      <input
-                        type="text"
-                        value={text}
-                        onChange={(e) => setText(e.target.value)}
-                        className="w-full px-4 py-2 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                        placeholder="What action do you want to generate?"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1">
-                        Topic
-                      </label>
-                      <select
-                        value={topicId}
-                        onChange={(e) => setTopicId(e.target.value)}
-                        className="w-full px-4 py-2 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                      >
-                        {topics.map((topic) => (
-                          <option key={topic.id} value={topic.id}>
-                            {topic.name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1">
-                        Frequency
-                      </label>
-                      <select
-                        value={frequency}
-                        onChange={(e) => setFrequency(e.target.value)}
-                        className="w-full px-4 py-2 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                      >
-                        <option value="daily">Daily</option>
-                        <option value="weekly">Weekly</option>
-                        <option value="monthly">Monthly</option>
-                        <option value="custom">Custom</option>
-                      </select>
-                    </div>
-
-                    {renderFrequencyOptions()}
-                  </div>
-
-                  <div className="flex justify-end space-x-3 mt-6">
-                    <button
-                      onClick={() => setShowModal(false)}
-                      className="px-4 py-2 text-secondary-700 dark:text-secondary-300 hover:bg-secondary-100 dark:hover:bg-secondary-700 rounded-lg"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      onClick={handleSaveGenerator}
-                      className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
-                    >
-                      {editingGenerator ? "Save Changes" : "Create Generator"}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        );
-      }
-
-      // Reports & insights component
-      function Reports({ db }) {
-        const [topics, setTopics] = React.useState([]);
-        const [reportType, setReportType] = React.useState("daily");
-        const [reportDate, setReportDate] = React.useState(
-          new Date().toISOString().split("T")[0]
-        );
-        const [reportData, setReportData] = React.useState(null);
-        const [isLoading, setIsLoading] = React.useState(false);
-
-        React.useEffect(() => {
-          loadTopics();
-        }, [db]);
-
-        React.useEffect(() => {
-          if (reportDate) {
-            generateReport();
-          }
-        }, [reportType, reportDate, db]);
-
-        async function loadTopics() {
-          const allTopics = await db.getAll("topics");
-          setTopics(allTopics);
-        }
-
-        const getTopicName = (topicId) => {
-          const topic = topics.find((t) => t.id === topicId);
-          return topic ? topic.name : "Unknown";
-        };
-
-        async function generateReport() {
-          setIsLoading(true);
-
-          try {
-            // Calculate date range based on report type
-            const selectedDate = new Date(reportDate);
-            let startDate, endDate;
-
-            switch (reportType) {
-              case "daily":
-                startDate = new Date(selectedDate);
-                startDate.setHours(0, 0, 0, 0);
-                endDate = new Date(selectedDate);
-                endDate.setHours(23, 59, 59, 999);
-                break;
-
-              case "weekly":
-                // Start from the beginning of the week (Sunday)
-                startDate = new Date(selectedDate);
-                startDate.setDate(
-                  selectedDate.getDate() - selectedDate.getDay()
-                );
-                startDate.setHours(0, 0, 0, 0);
-
-                // End at the end of the week (Saturday)
-                endDate = new Date(startDate);
-                endDate.setDate(startDate.getDate() + 6);
-                endDate.setHours(23, 59, 59, 999);
-                break;
-
-              case "monthly":
-                startDate = new Date(
-                  selectedDate.getFullYear(),
-                  selectedDate.getMonth(),
-                  1
-                );
-                endDate = new Date(
-                  selectedDate.getFullYear(),
-                  selectedDate.getMonth() + 1,
-                  0,
-                  23,
-                  59,
-                  59,
-                  999
-                );
-                break;
-
-              case "yearly":
-                startDate = new Date(selectedDate.getFullYear(), 0, 1);
-                endDate = new Date(
-                  selectedDate.getFullYear(),
-                  11,
-                  31,
-                  23,
-                  59,
-                  59,
-                  999
-                );
-                break;
-            }
-
-            // Fetch all actions within the date range
-            const actionsInRange = await db.getAll("actions");
-            const filteredActions = actionsInRange.filter((action) => {
-              const actionDate = new Date(action.createdAt);
-              return actionDate >= startDate && actionDate <= endDate;
-            });
-
-            // Fetch all thread updates within the date range
-            const updatesInRange = await db.getAll("threadUpdates");
-            const filteredUpdates = updatesInRange.filter((update) => {
-              const updateDate = new Date(update.timestamp);
-              return updateDate >= startDate && updateDate <= endDate;
-            });
-
-            // Group actions by status
-            const actionsByStatus = {
-              pending: filteredActions.filter((a) => a.status === "pending"),
-              completed: filteredActions.filter(
-                (a) => a.status === "completed"
-              ),
-              delayed: filteredActions.filter((a) => a.status === "delayed"),
-              discarded: filteredActions.filter(
-                (a) => a.status === "discarded"
-              ),
-              delegated: filteredActions.filter(
-                (a) => a.status === "delegated"
-              ),
-            };
-
-            // Group actions by topic
-            const actionsByTopic = {};
-            for (const action of filteredActions) {
-              if (!actionsByTopic[action.topicId]) {
-                actionsByTopic[action.topicId] = [];
-              }
-              actionsByTopic[action.topicId].push(action);
-            }
-
-            // Fetch threads related to the updates
-            const threadIds = [
-              ...new Set(filteredUpdates.map((update) => update.threadId)),
-            ];
-            const threads = [];
-
-            for (const threadId of threadIds) {
-              const thread = await db.get("threads", threadId);
-              if (thread) {
-                threads.push(thread);
-              }
-            }
-
-            // Group updates by thread
-            const threadUpdatesMap = {};
-            for (const update of filteredUpdates) {
-              if (!threadUpdatesMap[update.threadId]) {
-                threadUpdatesMap[update.threadId] = [];
-              }
-              threadUpdatesMap[update.threadId].push(update);
-            }
-
-            // Calculate completion rate
-            const totalActionsWithStatus = filteredActions.length;
-            const completionRate =
-              totalActionsWithStatus === 0
-                ? 0
-                : Math.round(
-                    (actionsByStatus.completed.length /
-                      totalActionsWithStatus) *
-                      100
-                  );
-
-            setReportData({
-              startDate,
-              endDate,
-              totalActions: filteredActions.length,
-              totalThreadUpdates: filteredUpdates.length,
-              actionsByStatus,
-              actionsByTopic,
-              threadUpdatesMap,
-              threads,
-              completionRate,
-            });
-          } catch (error) {
-            console.error("Error generating report:", error);
-          }
-
-          setIsLoading(false);
-        }
-
-        function formatDate(dateString) {
-          const date = new Date(dateString);
-          return date.toLocaleDateString(undefined, {
-            year: "numeric",
-            month: "short",
-            day: "numeric",
-          });
-        }
-
-        function formatDateTime(dateString) {
-          const date = new Date(dateString);
-          return date.toLocaleDateString(undefined, {
-            year: "numeric",
-            month: "short",
-            day: "numeric",
-            hour: "2-digit",
-            minute: "2-digit",
-          });
-        }
-
-        function formatDateRange(start, end) {
-          const startFormatted = formatDate(start);
-          const endFormatted = formatDate(end);
-
-          if (startFormatted === endFormatted) {
-            return startFormatted;
-          }
-
-          return `${startFormatted} - ${endFormatted}`;
-        }
-
-        return (
-          <div className="max-w-7xl mx-auto px-4 py-6 animate-fade-in">
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-2xl font-bold text-secondary-900 dark:text-secondary-100">
-                Reports & Insights
-              </h2>
-            </div>
-
-            <div className="bg-white dark:bg-secondary-800 rounded-xl shadow-sm p-4 mb-6">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label
-                    htmlFor="reportType"
-                    className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1"
-                  >
-                    Report Type
-                  </label>
-                  <select
-                    id="reportType"
-                    value={reportType}
-                    onChange={(e) => setReportType(e.target.value)}
-                    className="w-full px-4 py-2 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                  >
-                    <option value="daily">Daily</option>
-                    <option value="weekly">Weekly</option>
-                    <option value="monthly">Monthly</option>
-                    <option value="yearly">Yearly</option>
-                  </select>
-                </div>
-                <div>
-                  <label
-                    htmlFor="reportDate"
-                    className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1"
-                  >
-                    Date
-                  </label>
-                  <input
-                    type="date"
-                    id="reportDate"
-                    value={reportDate}
-                    onChange={(e) => setReportDate(e.target.value)}
-                    className="w-full px-4 py-2 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                  />
-                </div>
-              </div>
-            </div>
-
-            {isLoading ? (
-              <div className="flex justify-center py-8">
-                <div className="w-10 h-10 border-4 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
-              </div>
-            ) : reportData ? (
-              <div className="space-y-6">
-                {/* Report header */}
-                <div className="bg-white dark:bg-secondary-800 rounded-xl shadow-sm p-6">
-                  <h3 className="text-lg font-semibold text-secondary-900 dark:text-secondary-100 mb-4">
-                    Summary for{" "}
-                    {reportType === "daily"
-                      ? "Day"
-                      : reportType === "weekly"
-                      ? "Week"
-                      : reportType === "monthly"
-                      ? "Month"
-                      : "Year"}
-                  </h3>
-                  <div className="text-sm text-secondary-600 dark:text-secondary-400 mb-4">
-                    {formatDateRange(reportData.startDate, reportData.endDate)}
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-6 md:grid-cols-4">
-                    <div className="bg-secondary-50 dark:bg-secondary-700 rounded-lg p-4">
-                      <div className="text-sm text-secondary-500 dark:text-secondary-400">
-                        Thread Updates
-                      </div>
-                      <div className="text-2xl font-bold text-secondary-900 dark:text-secondary-100 mt-1">
-                        {reportData.totalThreadUpdates}
-                      </div>
-                    </div>
-                    <div className="bg-secondary-50 dark:bg-secondary-700 rounded-lg p-4">
-                      <div className="text-sm text-secondary-500 dark:text-secondary-400">
-                        Total Actions
-                      </div>
-                      <div className="text-2xl font-bold text-secondary-900 dark:text-secondary-100 mt-1">
-                        {reportData.totalActions}
-                      </div>
-                    </div>
-                    <div className="bg-secondary-50 dark:bg-secondary-700 rounded-lg p-4">
-                      <div className="text-sm text-secondary-500 dark:text-secondary-400">
-                        Completed Actions
-                      </div>
-                      <div className="text-2xl font-bold text-accent-600 dark:text-accent-400 mt-1">
-                        {reportData.actionsByStatus.completed.length}
-                      </div>
-                    </div>
-                    <div className="bg-secondary-50 dark:bg-secondary-700 rounded-lg p-4">
-                      <div className="text-sm text-secondary-500 dark:text-secondary-400">
-                        Completion Rate
-                      </div>
-                      <div className="text-2xl font-bold text-primary-600 dark:text-primary-400 mt-1">
-                        {reportData.completionRate}%
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Actions by status */}
-                <div className="bg-white dark:bg-secondary-800 rounded-xl shadow-sm p-6">
-                  <h3 className="text-lg font-semibold text-secondary-900 dark:text-secondary-100 mb-4">
-                    Actions by Status
-                  </h3>
-
-                  {reportData.totalActions === 0 ? (
-                    <div className="text-center py-4 text-secondary-500 dark:text-secondary-400">
-                      No actions found for this period
-                    </div>
-                  ) : (
-                    <>
-                      <div className="h-10 bg-secondary-100 dark:bg-secondary-700 rounded-lg overflow-hidden flex mb-4">
-                        {reportData.totalActions > 0 && (
-                          <>
-                            <div
-                              className="h-full bg-accent-500"
-                              style={{
-                                width: `${
-                                  (reportData.actionsByStatus.completed.length /
-                                    reportData.totalActions) *
-                                  100
-                                }%`,
-                              }}
-                              title={`Completed: ${reportData.actionsByStatus.completed.length}`}
-                            ></div>
-                            <div
-                              className="h-full bg-orange-500"
-                              style={{
-                                width: `${
-                                  (reportData.actionsByStatus.delayed.length /
-                                    reportData.totalActions) *
-                                  100
-                                }%`,
-                              }}
-                              title={`Delayed: ${reportData.actionsByStatus.delayed.length}`}
-                            ></div>
-                            <div
-                              className="h-full bg-red-500"
-                              style={{
-                                width: `${
-                                  (reportData.actionsByStatus.discarded.length /
-                                    reportData.totalActions) *
-                                  100
-                                }%`,
-                              }}
-                              title={`Discarded: ${reportData.actionsByStatus.discarded.length}`}
-                            ></div>
-                            <div
-                              className="h-full bg-blue-500"
-                              style={{
-                                width: `${
-                                  (reportData.actionsByStatus.delegated.length /
-                                    reportData.totalActions) *
-                                  100
-                                }%`,
-                              }}
-                              title={`Delegated: ${reportData.actionsByStatus.delegated.length}`}
-                            ></div>
-                            <div
-                              className="h-full bg-secondary-300 dark:bg-secondary-500"
-                              style={{
-                                width: `${
-                                  (reportData.actionsByStatus.pending.length /
-                                    reportData.totalActions) *
-                                  100
-                                }%`,
-                              }}
-                              title={`Pending: ${reportData.actionsByStatus.pending.length}`}
-                            ></div>
-                          </>
-                        )}
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-2 md:grid-cols-5 text-sm">
-                        <div className="flex items-center">
-                          <span className="w-3 h-3 bg-accent-500 rounded-full mr-2"></span>
-                          <span className="dark:text-secondary-300">
-                            Completed:{" "}
-                            {reportData.actionsByStatus.completed.length}
-                          </span>
-                        </div>
-                        <div className="flex items-center">
-                          <span className="w-3 h-3 bg-orange-500 rounded-full mr-2"></span>
-                          <span className="dark:text-secondary-300">
-                            Delayed: {reportData.actionsByStatus.delayed.length}
-                          </span>
-                        </div>
-                        <div className="flex items-center">
-                          <span className="w-3 h-3 bg-red-500 rounded-full mr-2"></span>
-                          <span className="dark:text-secondary-300">
-                            Discarded:{" "}
-                            {reportData.actionsByStatus.discarded.length}
-                          </span>
-                        </div>
-                        <div className="flex items-center">
-                          <span className="w-3 h-3 bg-blue-500 rounded-full mr-2"></span>
-                          <span className="dark:text-secondary-300">
-                            Delegated:{" "}
-                            {reportData.actionsByStatus.delegated.length}
-                          </span>
-                        </div>
-                        <div className="flex items-center">
-                          <span className="w-3 h-3 bg-secondary-300 dark:bg-secondary-500 rounded-full mr-2"></span>
-                          <span className="dark:text-secondary-300">
-                            Pending: {reportData.actionsByStatus.pending.length}
-                          </span>
-                        </div>
-                      </div>
-                    </>
-                  )}
-                </div>
-
-                {/* Actions by topic */}
-                <div className="bg-white dark:bg-secondary-800 rounded-xl shadow-sm p-6">
-                  <h3 className="text-lg font-semibold text-secondary-900 dark:text-secondary-100 mb-4">
-                    Actions by Topic
-                  </h3>
-
-                  {Object.keys(reportData.actionsByTopic).length === 0 ? (
-                    <div className="text-center py-4 text-secondary-500 dark:text-secondary-400">
-                      No actions found for this period
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      {Object.entries(reportData.actionsByTopic).map(
-                        ([topicId, actions]) => (
-                          <div
-                            key={topicId}
-                            className="border-b border-secondary-100 dark:border-secondary-700 pb-4 last:border-b-0 last:pb-0"
-                          >
-                            <div className="flex justify-between items-center mb-2">
-                              <h4 className="font-medium text-secondary-900 dark:text-secondary-100">
-                                {getTopicName(parseInt(topicId))}
-                              </h4>
-                              <span className="text-sm text-secondary-600 dark:text-secondary-400">
-                                {actions.length} actions
-                              </span>
-                            </div>
-                            <div className="text-sm">
-                              <div className="flex justify-between text-secondary-600 dark:text-secondary-400 mb-1">
-                                <span>Completed:</span>
-                                <span>
-                                  {
-                                    actions.filter(
-                                      (a) => a.status === "completed"
-                                    ).length
-                                  }
-                                </span>
-                              </div>
-                              <div className="h-2 bg-secondary-100 dark:bg-secondary-700 rounded-full overflow-hidden">
-                                <div
-                                  className="h-full bg-accent-500"
-                                  style={{
-                                    width: `${
-                                      (actions.filter(
-                                        (a) => a.status === "completed"
-                                      ).length /
-                                        actions.length) *
-                                      100
-                                    }%`,
-                                  }}
-                                ></div>
-                              </div>
-                            </div>
-                          </div>
-                        )
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                {/* Thread updates */}
-                <div className="bg-white dark:bg-secondary-800 rounded-xl shadow-sm p-6">
-                  <h3 className="text-lg font-semibold text-secondary-900 dark:text-secondary-100 mb-4">
-                    Thread Updates
-                  </h3>
-
-                  {reportData.totalThreadUpdates === 0 ? (
-                    <div className="text-center py-4 text-secondary-500 dark:text-secondary-400">
-                      No thread updates found for this period
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      {Object.entries(reportData.threadUpdatesMap).map(
-                        ([threadId, updates]) => {
-                          const thread = reportData.threads.find(
-                            (t) => t.id === parseInt(threadId)
-                          );
-                          if (!thread) return null;
-
-                          return (
-                            <div
-                              key={threadId}
-                              className="border-b border-secondary-100 dark:border-secondary-700 pb-4 last:border-b-0 last:pb-0"
-                            >
-                              <div className="flex justify-between items-center mb-2">
-                                <h4 className="font-medium text-secondary-900 dark:text-secondary-100">
-                                  {thread.title}
-                                </h4>
-                                <span className="text-sm text-secondary-600 dark:text-secondary-400">
-                                  {updates.length} updates
-                                </span>
-                              </div>
-                              <div className="text-sm text-secondary-600 dark:text-secondary-400 mb-3">
-                                Latest update:{" "}
-                                {formatDateTime(updates[0].timestamp)}
-                              </div>
-                              <div className="text-sm text-secondary-800 dark:text-secondary-200 line-clamp-2">
-                                {updates[0].content}
-                              </div>
-                            </div>
-                          );
-                        }
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-            ) : (
-              <div className="bg-white dark:bg-secondary-800 rounded-xl shadow-sm p-6 text-center">
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  className="h-12 w-12 mx-auto text-secondary-400"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"
-                  />
-                </svg>
-                <h3 className="mt-4 text-lg font-medium text-secondary-900 dark:text-secondary-100">
-                  No Report Data
-                </h3>
-                <p className="mt-2 text-secondary-600 dark:text-secondary-400">
-                  Select a date range to generate a report.
-                </p>
-              </div>
-            )}
-          </div>
-        );
-      }
-
-      // Action detail component
-      function ActionDetail({ db, action, navigateTo }) {
-        const [topics, setTopics] = React.useState([]);
-        const [actionData, setActionData] = React.useState(action);
-        const [isEditing, setIsEditing] = React.useState(false);
-        const [editedText, setEditedText] = React.useState(action.text);
-        const [editedTopicId, setEditedTopicId] = React.useState(
-          action.topicId
-        );
-        const [editedDueDate, setEditedDueDate] = React.useState(
-          action.due ? new Date(action.due).toISOString().split("T")[0] : ""
-        );
-
-        React.useEffect(() => {
-          async function loadTopics() {
-            const allTopics = await db.getAll("topics");
-            setTopics(allTopics);
-          }
-
-          loadTopics();
-        }, [db]);
-
-        const handleStatusChange = async (newStatus) => {
-          try {
-            const updatedAction = {
-              ...actionData,
-              status: newStatus,
-              completedAt:
-                newStatus === "completed" ? new Date().toISOString() : null,
-            };
-
-            await db.put("actions", updatedAction);
-            setActionData(updatedAction);
-          } catch (error) {
-            console.error("Error updating action status:", error);
-            alert("Error updating action. Please try again.");
-          }
-        };
-
-        const handleSaveChanges = async () => {
-          try {
-            const updatedAction = {
-              ...actionData,
-              text: editedText,
-              topicId: parseInt(editedTopicId),
-              due: editedDueDate ? new Date(editedDueDate).toISOString() : null,
-            };
-
-            await db.put("actions", updatedAction);
-            setActionData(updatedAction);
-            setIsEditing(false);
-          } catch (error) {
-            console.error("Error updating action:", error);
-            alert("Error updating action. Please try again.");
-          }
-        };
-
-        const handleDelete = async () => {
-          const confirmed = window.confirm(
-            "Are you sure you want to delete this action?"
-          );
-
-          if (confirmed) {
-            try {
-              await db.delete("actions", actionData.id);
-              navigateTo("actions");
-            } catch (error) {
-              console.error("Error deleting action:", error);
-              alert("Error deleting action. Please try again.");
-            }
-          }
-        };
-
-        const getCurrentTopic = () => {
-          return (
-            topics.find((t) => t.id === actionData.topicId) || {
-              name: "Unknown",
-              color: "#64748b",
-            }
-          );
-        };
-
-        const topic = getCurrentTopic();
-
-        return (
-          <div className="max-w-7xl mx-auto px-4 py-6 animate-fade-in">
-            <div className="flex items-center mb-6">
-              <button
-                onClick={() => navigateTo("actions")}
-                className="mr-3 text-secondary-600 dark:text-secondary-400 hover:text-secondary-900 dark:hover:text-secondary-200"
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  className="h-6 w-6"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M10 19l-7-7m0 0l7-7m-7 7h18"
-                  />
-                </svg>
-              </button>
-              <h2 className="text-xl font-bold text-secondary-900 dark:text-secondary-100">
-                Action Details
-              </h2>
-            </div>
-
-            <div className="bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-6 mb-6">
-              {isEditing ? (
-                <div className="space-y-4">
-                  <div>
-                    <label
-                      htmlFor="actionText"
-                      className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1"
-                    >
-                      Action Text
-                    </label>
-                    <textarea
-                      id="actionText"
-                      value={editedText}
-                      onChange={(e) => setEditedText(e.target.value)}
-                      className="w-full px-4 py-2 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                      rows="3"
-                    ></textarea>
-                  </div>
-
-                  <div>
-                    <label
-                      htmlFor="actionTopic"
-                      className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1"
-                    >
-                      Topic
-                    </label>
-                    <select
-                      id="actionTopic"
-                      value={editedTopicId}
-                      onChange={(e) => setEditedTopicId(e.target.value)}
-                      className="w-full px-4 py-2 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                    >
-                      {topics.map((topic) => (
-                        <option key={topic.id} value={topic.id}>
-                          {topic.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label
-                      htmlFor="actionDue"
-                      className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1"
-                    >
-                      Due Date (Optional)
-                    </label>
-                    <input
-                      id="actionDue"
-                      type="date"
-                      value={editedDueDate}
-                      onChange={(e) => setEditedDueDate(e.target.value)}
-                      className="w-full px-4 py-2 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                    />
-                  </div>
-
-                  <div className="flex justify-end space-x-3 mt-4">
-                    <button
-                      onClick={() => setIsEditing(false)}
-                      className="px-4 py-2 text-secondary-700 dark:text-secondary-300 hover:bg-secondary-100 dark:hover:bg-secondary-700 rounded-lg"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      onClick={handleSaveChanges}
-                      className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
-                    >
-                      Save Changes
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div>
-                  <div className="flex justify-between">
-                    <span
-                      className="px-3 py-1 text-sm rounded-full mb-4"
-                      style={{
-                        backgroundColor: `${topic.color}20`,
-                        color: topic.color,
-                      }}
-                    >
-                      {topic.name}
-                    </span>
-
-                    <div>
-                      <button
-                        onClick={() => setIsEditing(true)}
-                        className="text-secondary-500 hover:text-secondary-700 dark:text-secondary-400 dark:hover:text-secondary-200 p-2"
-                      >
-                        <svg
-                          xmlns="http://www.w3.org/2000/svg"
-                          className="h-5 w-5"
-                          fill="none"
-                          viewBox="0 0 24 24"
-                          stroke="currentColor"
-                        >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth={2}
-                            d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-                          />
-                        </svg>
-                      </button>
-                      <button
-                        onClick={handleDelete}
-                        className="text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 p-2"
-                      >
-                        <svg
-                          xmlns="http://www.w3.org/2000/svg"
-                          className="h-5 w-5"
-                          fill="none"
-                          viewBox="0 0 24 24"
-                          stroke="currentColor"
-                        >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth={2}
-                            d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                          />
-                        </svg>
-                      </button>
-                    </div>
-                  </div>
-
-                  <p className="text-lg font-medium text-secondary-900 dark:text-secondary-100 mb-4 whitespace-pre-wrap">
-                    {actionData.text}
-                  </p>
-
-                  <div className="space-y-2 text-sm">
-                    <div className="flex justify-between">
-                      <span className="text-secondary-600 dark:text-secondary-400">
-                        Status:
-                      </span>
-                      <span
-                        className={`font-medium ${
-                          actionData.status === "completed"
-                            ? "text-accent-600 dark:text-accent-400"
-                            : actionData.status === "delayed"
-                            ? "text-orange-600 dark:text-orange-400"
-                            : actionData.status === "discarded"
-                            ? "text-red-600 dark:text-red-400"
-                            : actionData.status === "delegated"
-                            ? "text-blue-600 dark:text-blue-400"
-                            : "text-secondary-900 dark:text-secondary-100"
-                        }`}
-                      >
-                        {actionData.status.charAt(0).toUpperCase() +
-                          actionData.status.slice(1)}
-                      </span>
-                    </div>
-
-                    <div className="flex justify-between">
-                      <span className="text-secondary-600 dark:text-secondary-400">
-                        Created:
-                      </span>
-                      <span className="text-secondary-900 dark:text-secondary-100">
-                        {formatDate(actionData.createdAt)}
-                      </span>
-                    </div>
-
-                    {actionData.completedAt && (
-                      <div className="flex justify-between">
-                        <span className="text-secondary-600 dark:text-secondary-400">
-                          Completed:
-                        </span>
-                        <span className="text-secondary-900 dark:text-secondary-100">
-                          {formatDate(actionData.completedAt)}
-                        </span>
-                      </div>
-                    )}
-
-                    {actionData.due && (
-                      <div className="flex justify-between">
-                        <span className="text-secondary-600 dark:text-secondary-400">
-                          Due:
-                        </span>
-                        <span className="text-secondary-900 dark:text-secondary-100">
-                          {formatDate(actionData.due)}
-                        </span>
-                      </div>
-                    )}
-                  </div>
-
-                  {actionData.status === "pending" && (
-                    <div className="mt-6 grid grid-cols-2 gap-3">
-                      <button
-                        onClick={() => handleStatusChange("completed")}
-                        className="px-4 py-3 bg-accent-500 text-white rounded-lg hover:bg-accent-600 focus:outline-none focus:ring-2 focus:ring-accent-500 focus:ring-offset-2"
-                      >
-                        Mark Complete
-                      </button>
-                      <button
-                        onClick={() => handleStatusChange("delayed")}
-                        className="px-4 py-3 bg-orange-500 text-white rounded-lg hover:bg-orange-600 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-offset-2"
-                      >
-                        Delay
-                      </button>
-                      <button
-                        onClick={() => handleStatusChange("delegated")}
-                        className="px-4 py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
-                      >
-                        Delegate
-                      </button>
-                      <button
-                        onClick={() => handleStatusChange("discarded")}
-                        className="px-4 py-3 bg-red-500 text-white rounded-lg hover:bg-red-600 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2"
-                      >
-                        Discard
-                      </button>
-                    </div>
-                  )}
-
-                  {actionData.status !== "pending" && (
-                    <div className="mt-6">
-                      <button
-                        onClick={() => handleStatusChange("pending")}
-                        className="w-full px-4 py-3 bg-secondary-500 text-white rounded-lg hover:bg-secondary-600 focus:outline-none focus:ring-2 focus:ring-secondary-500 focus:ring-offset-2"
-                      >
-                        Reopen Action
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        );
-      }
-
-      // Render the app
       const domContainer = document.getElementById("app");
       const root = ReactDOM.createRoot(domContainer);
       root.render(<App />);
