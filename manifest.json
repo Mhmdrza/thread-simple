@@ -2,7 +2,7 @@
     "name": "Thinking Tool",
     "short_name": "Thinking",
     "description": "A tool for organizing thoughts and actions",
-    "start_url": "/",
+    "start_url": "/thread-simple",
     "display": "standalone",
     "background_color": "#ffffff",
     "theme_color": "#4f46e5",
