@@ -189,6 +189,8 @@
               actionsStore.createIndex("status", "status");
               actionsStore.createIndex("due", "due");
               actionsStore.createIndex("createdAt", "createdAt");
+              actionsStore.createIndex("sequence", "sequence"); // Add sequence index
+              actionsStore.createIndex("isNextAction", "isNextAction"); // Flag for first action in sequence
             }
 
             // Action generators store
@@ -1122,20 +1124,36 @@
       // Thread detail view component
       function ThreadDetail({ db, thread, navigateTo }) {
         const [updates, setUpdates] = React.useState([]);
-        const [loading, setLoading] = React.useState(true);
         const [newUpdate, setNewUpdate] = React.useState("");
-        const [topics, setTopics] = React.useState([]);
+        const [newAction, setNewAction] = React.useState("");
+        const [threadActions, setThreadActions] = React.useState([]);
+        const [loading, setLoading] = React.useState(true);
+        const [topic, setTopic] = React.useState(null);
 
         React.useEffect(() => {
           async function loadData() {
             setLoading(true);
 
-            // Load topics
-            const allTopics = await db.getAll("topics");
-            setTopics(allTopics);
+            // Load thread topic
+            if (thread.topicId) {
+              const topicData = await db.get("topics", thread.topicId);
+              setTopic(topicData);
+            }
 
             // Load thread updates
-            await loadUpdates();
+            const index = db
+              .transaction("threadUpdates")
+              .store.index("threadId");
+            const threadUpdates = await index.getAll(
+              IDBKeyRange.only(thread.id)
+            );
+            threadUpdates.sort(
+              (a, b) => new Date(b.timestamp) - new Date(a.timestamp)
+            );
+            setUpdates(threadUpdates);
+
+            // Load thread actions in sequence order
+            await loadThreadActions();
 
             setLoading(false);
           }
@@ -1143,16 +1161,13 @@
           loadData();
         }, [db, thread]);
 
-        async function loadUpdates() {
-          const index = db.transaction("threadUpdates").store.index("threadId");
-          const threadUpdates = await index.getAll(IDBKeyRange.only(thread.id));
+        async function loadThreadActions() {
+          const index = db.transaction("actions").store.index("threadId");
+          const actions = await index.getAll(IDBKeyRange.only(thread.id));
 
-          // Sort by timestamp, newest first
-          threadUpdates.sort(
-            (a, b) => new Date(b.timestamp) - new Date(a.timestamp)
-          );
-
-          setUpdates(threadUpdates);
+          // Sort actions by sequence
+          actions.sort((a, b) => (a.sequence || 0) - (b.sequence || 0));
+          setThreadActions(actions);
         }
 
         const handleNewUpdate = async (e) => {
@@ -1167,548 +1182,702 @@
 
           await db.add("threadUpdates", update);
           setNewUpdate("");
-          await loadUpdates();
-        };
 
-        const getTopic = () => {
-          return (
-            topics.find((t) => t.id === thread.topicId) || {
-              name: "Unknown",
-              color: "#64748b",
-            }
+          // Reload updates
+          const index = db.transaction("threadUpdates").store.index("threadId");
+          const threadUpdates = await index.getAll(IDBKeyRange.only(thread.id));
+          threadUpdates.sort(
+            (a, b) => new Date(b.timestamp) - new Date(a.timestamp)
           );
+          setUpdates(threadUpdates);
         };
 
-        const topic = getTopic();
+        // Add a new action to the thread sequence
+        const handleNewAction = async (e) => {
+          e.preventDefault();
+          if (!newAction.trim()) return;
+
+          // Get max sequence number from existing actions
+          const maxSequence =
+            threadActions.length > 0
+              ? Math.max(...threadActions.map((a) => a.sequence || 0))
+              : -1;
+
+          // Determine if this is the first action in the sequence
+          const isFirstAction =
+            threadActions.length === 0 ||
+            !threadActions.some((a) => a.status === "pending");
+
+          const action = {
+            text: newAction,
+            threadId: thread.id,
+            topicId: thread.topicId,
+            status: "pending",
+            createdAt: new Date().toISOString(),
+            sequence: maxSequence + 1,
+            isNextAction: isFirstAction, // Mark as next action if it's the first pending action
+          };
+
+          await db.add("actions", action);
+          setNewAction("");
+          await loadThreadActions();
+        };
+
+        const handleActionStatusChange = async (actionId, newStatus) => {
+          // Get the current action
+          const action = await db.get("actions", actionId);
+          const currentSequence = action.sequence;
+
+          // Update the current action status
+          action.status = newStatus;
+          action.completedAt =
+            newStatus === "completed" ? new Date().toISOString() : null;
+          action.isNextAction = false;
+          await db.put("actions", action);
+
+          // Find the next action in sequence and mark it as the next action
+          const nextActions = threadActions.filter(
+            (a) => a.sequence > currentSequence && a.status === "pending"
+          );
+
+          if (nextActions.length > 0) {
+            const nextAction = nextActions.sort(
+              (a, b) => a.sequence - b.sequence
+            )[0];
+            nextAction.isNextAction = true;
+            await db.put("actions", nextAction);
+          }
+
+          await loadThreadActions();
+        };
 
         return (
-          <div className="max-w-7xl mx-auto px-4 py-6 animate-fade-in">
-            <div className="flex items-center mb-6">
-              <button
-                onClick={() => navigateTo("home")}
-                className="mr-3 text-secondary-600 dark:text-secondary-400 hover:text-secondary-900 dark:hover:text-secondary-200"
+          <div className="max-w-4xl mx-auto px-4 py-6 animate-slide-up">
+            <button
+              onClick={() => navigateTo("home")}
+              className="flex items-center mb-4 text-secondary-600 hover:text-secondary-800 dark:text-secondary-400 dark:hover:text-secondary-200"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="h-5 w-5 mr-1"
+                viewBox="0 0 20 20"
+                fill="currentColor"
               >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  className="h-6 w-6"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M10 19l-7-7m0 0l7-7m-7 7h18"
-                  />
-                </svg>
-              </button>
-              <h2 className="text-2xl font-bold text-secondary-900 dark:text-secondary-100 truncate">
-                {thread.title}
-              </h2>
-            </div>
+                <path
+                  fillRule="evenodd"
+                  d="M9.707 14.707a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 1.414L7.414 9H15a1 1 0 110 2H7.414l2.293 2.293a1 1 0 010 1.414z"
+                  clipRule="evenodd"
+                />
+              </svg>
+              Back
+            </button>
 
-            <div className="bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-4 mb-6">
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center">
-                  <span
-                    className="px-3 py-1 text-sm rounded-full"
-                    style={{
-                      backgroundColor: `${topic.color}20`,
-                      color: topic.color,
-                    }}
-                  >
-                    {topic.name}
-                  </span>
-                  <span className="ml-3 text-sm text-secondary-600 dark:text-secondary-400">
-                    Created: {formatDate(thread.createdAt)}
-                  </span>
+            <div className="bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-6 mb-6">
+              <div className="flex justify-between items-start mb-4">
+                <div>
+                  <h1 className="text-2xl font-bold text-secondary-900 dark:text-secondary-100">
+                    {thread.title}
+                  </h1>
+                  <div className="mt-1 flex items-center">
+                    <span
+                      className={`text-xs font-medium px-2 py-1 rounded-full ${
+                        thread.state === "open"
+                          ? "bg-accent-100 text-accent-800 dark:bg-accent-900 dark:text-accent-200"
+                          : thread.state === "blocked"
+                          ? "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200"
+                          : "bg-secondary-100 text-secondary-800 dark:bg-secondary-900 dark:text-secondary-200"
+                      }`}
+                    >
+                      {thread.state || "open"}
+                    </span>
+                    {topic && (
+                      <span
+                        className="ml-2 px-2 py-1 text-xs rounded-full"
+                        style={{
+                          backgroundColor: `${topic.color}20`,
+                          color: topic.color,
+                        }}
+                      >
+                        {topic.name}
+                      </span>
+                    )}
+                    <span className="ml-2 text-xs text-secondary-500 dark:text-secondary-400">
+                      Created {new Date(thread.createdAt).toLocaleDateString()}
+                    </span>
+                  </div>
                 </div>
               </div>
 
               {thread.description && (
-                <p className="text-secondary-700 dark:text-secondary-300 text-sm">
-                  {thread.description}
-                </p>
-              )}
-            </div>
-
-            {/* New update form */}
-            <form onSubmit={handleNewUpdate} className="mb-6">
-              <label
-                htmlFor="newUpdate"
-                className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1"
-              >
-                Add a new update
-              </label>
-              <div className="flex">
-                <textarea
-                  id="newUpdate"
-                  rows="3"
-                  value={newUpdate}
-                  onChange={(e) => setNewUpdate(e.target.value)}
-                  placeholder="What's on your mind?"
-                  className="flex-grow px-4 py-3 rounded-l-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                ></textarea>
-                <button
-                  type="submit"
-                  className="px-4 py-3 rounded-r-lg bg-primary-500 text-white hover:bg-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
-                >
-                  Add
-                </button>
-              </div>
-            </form>
-
-            {/* Updates timeline */}
-            <div>
-              <h3 className="text-lg font-semibold text-secondary-900 dark:text-secondary-100 mb-4">
-                Thread Updates
-              </h3>
-
-              {loading ? (
-                <div className="flex justify-center py-8">
-                  <div className="w-8 h-8 border-4 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
+                <div className="mb-5 text-secondary-700 dark:text-secondary-300">
+                  <p>{thread.description}</p>
                 </div>
-              ) : updates.length > 0 ? (
-                <div className="space-y-6">
-                  {updates.map((update) => (
-                    <div
-                      key={update.id}
-                      className="bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-5 border-l-2 border-primary-500"
+              )}
+
+              {/* Thread Actions Section - New Vertical Stepper UI */}
+              <div className="mb-6 border-t border-secondary-200 dark:border-secondary-700 pt-5">
+                <h2 className="text-lg font-semibold text-secondary-900 dark:text-secondary-100 mb-3">
+                  Thread Actions
+                </h2>
+
+                {/* Add new action form */}
+                <form onSubmit={handleNewAction} className="mb-4">
+                  <div className="flex">
+                    <input
+                      type="text"
+                      value={newAction}
+                      onChange={(e) => setNewAction(e.target.value)}
+                      placeholder="Add a sequential action..."
+                      className="flex-grow px-4 py-2 rounded-l-lg border border-secondary-200 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:bg-secondary-800 dark:border-secondary-700 dark:text-white"
+                    />
+                    <button
+                      type="submit"
+                      className="px-4 py-2 rounded-r-lg bg-primary-500 text-white hover:bg-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
                     >
-                      <div className="text-xs text-secondary-500 dark:text-secondary-400 mb-2">
-                        {formatDateTime(update.timestamp)}
+                      Add Action
+                    </button>
+                  </div>
+                </form>
+
+                {/* Vertical Stepper showing thread actions */}
+                {threadActions.length > 0 ? (
+                  <div className="relative ml-4">
+                    {/* Vertical line connecting the steps */}
+                    <div className="absolute left-4 top-0 bottom-0 w-0.5 bg-secondary-200 dark:bg-secondary-700"></div>
+
+                    {threadActions.map((action, index) => (
+                      <div key={action.id} className="relative mb-4 pb-2">
+                        <div className="flex items-start">
+                          {/* Step indicator */}
+                          <div
+                            className={`absolute left-0 z-10 flex items-center justify-center w-8 h-8 rounded-full mt-1 border-2 ${
+                              action.status === "completed"
+                                ? "bg-accent-500 border-accent-600 text-white"
+                                : action.status === "discarded"
+                                ? "bg-red-100 border-red-300 text-red-800 dark:bg-red-900 dark:border-red-700 dark:text-red-200"
+                                : action.isNextAction
+                                ? "bg-primary-100 border-primary-500 text-primary-800 dark:bg-primary-900 dark:border-primary-500 dark:text-primary-200"
+                                : "bg-white border-secondary-300 text-secondary-500 dark:bg-secondary-800 dark:border-secondary-600 dark:text-secondary-400"
+                            }`}
+                          >
+                            {action.status === "completed" ? (
+                              <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                className="h-5 w-5"
+                                viewBox="0 0 20 20"
+                                fill="currentColor"
+                              >
+                                <path
+                                  fillRule="evenodd"
+                                  d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+                                  clipRule="evenodd"
+                                />
+                              </svg>
+                            ) : (
+                              index + 1
+                            )}
+                          </div>
+
+                          {/* Action content */}
+                          <div className="ml-12 bg-white dark:bg-secondary-800 shadow-sm rounded-lg border border-secondary-200 dark:border-secondary-700 p-4 w-full">
+                            <div className="flex justify-between">
+                              <p
+                                className={`text-secondary-900 dark:text-secondary-100 ${
+                                  action.status === "completed"
+                                    ? "line-through text-secondary-500"
+                                    : ""
+                                }`}
+                              >
+                                {action.text}
+                              </p>
+
+                              {/* Action is pending - show action buttons */}
+                              {action.status === "pending" && (
+                                <div className="flex space-x-1 ml-2">
+                                  <button
+                                    onClick={() =>
+                                      handleActionStatusChange(
+                                        action.id,
+                                        "completed"
+                                      )
+                                    }
+                                    className="text-accent-500 hover:text-accent-600 dark:hover:text-accent-400 p-1"
+                                    title="Complete"
+                                  >
+                                    <svg
+                                      xmlns="http://www.w3.org/2000/svg"
+                                      className="h-5 w-5"
+                                      fill="none"
+                                      viewBox="0 0 24 24"
+                                      stroke="currentColor"
+                                    >
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        strokeWidth={2}
+                                        d="M5 13l4 4L19 7"
+                                      />
+                                    </svg>
+                                  </button>
+                                  <button
+                                    onClick={() =>
+                                      handleActionStatusChange(
+                                        action.id,
+                                        "delegated"
+                                      )
+                                    }
+                                    className="text-blue-500 hover:text-blue-600 dark:hover:text-blue-400 p-1"
+                                    title="Delegate"
+                                  >
+                                    <svg
+                                      xmlns="http://www.w3.org/2000/svg"
+                                      className="h-5 w-5"
+                                      fill="none"
+                                      viewBox="0 0 24 24"
+                                      stroke="currentColor"
+                                    >
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        strokeWidth={2}
+                                        d="M7 11.5V14m0-2.5v-6a1.5 1.5 0 113 0m-3 6a1.5 1.5 0 00-3 0v2a7.5 7.5 0 0015 0v-5a1.5 1.5 0 00-3 0m-6-3V11m0-5.5v-1a1.5 1.5 0 013 0v1m0 0V11m0-5.5a1.5 1.5 0 013 0v3m0 0V11"
+                                      />
+                                    </svg>
+                                  </button>
+                                  <button
+                                    onClick={() =>
+                                      handleActionStatusChange(
+                                        action.id,
+                                        "discarded"
+                                      )
+                                    }
+                                    className="text-red-500 hover:text-red-600 dark:hover:text-red-400 p-1"
+                                    title="Discard"
+                                  >
+                                    <svg
+                                      xmlns="http://www.w3.org/2000/svg"
+                                      className="h-5 w-5"
+                                      fill="none"
+                                      viewBox="0 0 24 24"
+                                      stroke="currentColor"
+                                    >
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        strokeWidth={2}
+                                        d="M6 18L18 6M6 6l12 12"
+                                      />
+                                    </svg>
+                                  </button>
+                                </div>
+                              )}
+
+                              {/* Action is completed or discarded - show status */}
+                              {action.status !== "pending" && (
+                                <span
+                                  className={`text-xs px-2 py-1 rounded-full ${
+                                    action.status === "completed"
+                                      ? "bg-accent-100 text-accent-800 dark:bg-accent-900 dark:text-accent-200"
+                                      : action.status === "discarded"
+                                      ? "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200"
+                                      : "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200"
+                                  }`}
+                                >
+                                  {action.status}
+                                </span>
+                              )}
+                            </div>
+
+                            {action.completedAt && (
+                              <div className="mt-1 text-xs text-secondary-500 dark:text-secondary-400">
+                                {action.status} on{" "}
+                                {new Date(action.completedAt).toLocaleString()}
+                              </div>
+                            )}
+                          </div>
+                        </div>
                       </div>
-                      <div className="text-secondary-900 dark:text-secondary-100 whitespace-pre-wrap">
-                        {update.content}
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center py-6 text-secondary-500 dark:text-secondary-400 border border-dashed border-secondary-300 dark:border-secondary-700 rounded-lg">
+                    No actions created for this thread yet.
+                    <br />
+                    Add your first action above to start planning.
+                  </div>
+                )}
+              </div>
+
+              {/* Thread Updates Section */}
+              <div className="border-t border-secondary-200 dark:border-secondary-700 pt-5">
+                <h2 className="text-lg font-semibold text-secondary-900 dark:text-secondary-100 mb-3">
+                  Thread Updates
+                </h2>
+
+                <form onSubmit={handleNewUpdate} className="mb-4">
+                  <div className="flex">
+                    <input
+                      type="text"
+                      value={newUpdate}
+                      onChange={(e) => setNewUpdate(e.target.value)}
+                      placeholder="Add a status update..."
+                      className="flex-grow px-4 py-2 rounded-l-lg border border-secondary-200 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:bg-secondary-800 dark:border-secondary-700 dark:text-white"
+                    />
+                    <button
+                      type="submit"
+                      className="px-4 py-2 rounded-r-lg bg-secondary-500 text-white hover:bg-secondary-600 focus:outline-none focus:ring-2 focus:ring-secondary-500 focus:ring-offset-2 dark:bg-secondary-600 dark:hover:bg-secondary-700"
+                    >
+                      Add Update
+                    </button>
+                  </div>
+                </form>
+
+                {updates.length > 0 ? (
+                  <div className="space-y-4">
+                    {updates.map((update) => (
+                      <div
+                        key={update.id}
+                        className="bg-secondary-50 dark:bg-secondary-900 rounded-lg p-4"
+                      >
+                        <p className="text-secondary-800 dark:text-secondary-200">
+                          {update.content}
+                        </p>
+                        <p className="mt-2 text-xs text-secondary-500 dark:text-secondary-400">
+                          {new Date(update.timestamp).toLocaleString()}
+                        </p>
                       </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-center py-8 text-secondary-600 dark:text-secondary-400">
-                  No updates yet. Add your first update above.
-                </div>
-              )}
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center py-4 text-secondary-500 dark:text-secondary-400">
+                    No updates yet.
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         );
       }
-
-      // New thread component
       function NewThread({ db, navigateTo }) {
         const [title, setTitle] = React.useState("");
         const [description, setDescription] = React.useState("");
-        const [selectedTopic, setSelectedTopic] = React.useState(1); // Default to "All" topic
+        const [selectedTopic, setSelectedTopic] = React.useState(1); // Default to first topic
         const [topics, setTopics] = React.useState([]);
+        const [initialAction, setInitialAction] = React.useState(""); // New field for initial action
+        const [loading, setLoading] = React.useState(true);
 
         React.useEffect(() => {
           async function loadTopics() {
+            setLoading(true);
             const allTopics = await db.getAll("topics");
             setTopics(allTopics);
+            setLoading(false);
           }
-
           loadTopics();
         }, [db]);
 
         const handleSubmit = async (e) => {
           e.preventDefault();
+          if (!title.trim()) return;
 
-          if (!title.trim()) {
-            alert("Please enter a title for the thread");
-            return;
-          }
+          // Create new thread
+          const thread = {
+            title: title.trim(),
+            description: description.trim(),
+            topicId: selectedTopic,
+            createdAt: new Date().toISOString(),
+            state: "open",
+          };
 
-          try {
-            // Create new thread
-            const thread = {
-              title,
-              description,
-              topicId: parseInt(selectedTopic),
+          const threadId = await db.add("threads", thread);
+
+          // If there's an initial action, create it
+          if (initialAction.trim()) {
+            const action = {
+              text: initialAction.trim(),
+              threadId,
+              topicId: selectedTopic,
+              status: "pending",
               createdAt: new Date().toISOString(),
+              sequence: 0,
+              isNextAction: true, // First action is automatically the next action
             };
 
-            const threadId = await db.add("threads", thread);
-
-            // Navigate to the new thread
-            navigateTo("thread", { id: threadId, ...thread });
-          } catch (error) {
-            console.error("Error creating thread:", error);
-            alert("Error creating thread. Please try again.");
+            await db.add("actions", action);
           }
+
+          // Navigate to the new thread
+          navigateTo("thread", { ...thread, id: threadId });
         };
 
         return (
-          <div className="max-w-7xl mx-auto px-4 py-6 animate-fade-in">
-            <div className="flex items-center mb-6">
-              <button
-                onClick={() => navigateTo("home")}
-                className="mr-3 text-secondary-600 dark:text-secondary-400 hover:text-secondary-900 dark:hover:text-secondary-200"
+          <div className="max-w-4xl mx-auto px-4 py-6 animate-slide-up">
+            <button
+              onClick={() => navigateTo("home")}
+              className="flex items-center mb-4 text-secondary-600 hover:text-secondary-800 dark:text-secondary-400 dark:hover:text-secondary-200"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="h-5 w-5 mr-1"
+                viewBox="0 0 20 20"
+                fill="currentColor"
               >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  className="h-6 w-6"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M10 19l-7-7m0 0l7-7m-7 7h18"
-                  />
-                </svg>
-              </button>
-              <h2 className="text-2xl font-bold text-secondary-900 dark:text-secondary-100">
-                Create New Thread
-              </h2>
-            </div>
+                <path
+                  fillRule="evenodd"
+                  d="M9.707 14.707a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 1.414L7.414 9H15a1 1 0 110 2H7.414l2.293 2.293a1 1 0 010 1.414z"
+                  clipRule="evenodd"
+                />
+              </svg>
+              Back
+            </button>
 
             <div className="bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-6">
-              <form onSubmit={handleSubmit} className="space-y-6">
-                <div>
-                  <label
-                    htmlFor="title"
-                    className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1"
-                  >
-                    Thread Title
-                  </label>
-                  <input
-                    id="title"
-                    type="text"
-                    value={title}
-                    onChange={(e) => setTitle(e.target.value)}
-                    className="w-full px-4 py-2 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                    placeholder="Enter a title for your thread"
-                    required
-                  />
-                </div>
+              <h1 className="text-2xl font-bold text-secondary-900 dark:text-secondary-100 mb-6">
+                Create New Thread
+              </h1>
 
-                <div>
-                  <label
-                    htmlFor="topic"
-                    className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1"
-                  >
-                    Topic
-                  </label>
-                  <select
-                    id="topic"
-                    value={selectedTopic}
-                    onChange={(e) => setSelectedTopic(e.target.value)}
-                    className="w-full px-4 py-2 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                  >
-                    {topics.map((topic) => (
-                      <option key={topic.id} value={topic.id}>
-                        {topic.name}
-                      </option>
-                    ))}
-                  </select>
+              {loading ? (
+                <div className="flex justify-center py-8">
+                  <div className="w-10 h-10 border-4 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
                 </div>
+              ) : (
+                <form onSubmit={handleSubmit}>
+                  <div className="mb-4">
+                    <label
+                      className="block text-secondary-700 dark:text-secondary-300 mb-2"
+                      htmlFor="title"
+                    >
+                      Title
+                    </label>
+                    <input
+                      id="title"
+                      type="text"
+                      value={title}
+                      onChange={(e) => setTitle(e.target.value)}
+                      className="w-full px-4 py-2 rounded-lg border border-secondary-200 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:bg-secondary-800 dark:border-secondary-700 dark:text-white"
+                      placeholder="Thread title"
+                      required
+                    />
+                  </div>
 
-                <div>
-                  <label
-                    htmlFor="description"
-                    className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1"
-                  >
-                    Description (Optional)
-                  </label>
-                  <textarea
-                    id="description"
-                    rows="3"
-                    value={description}
-                    onChange={(e) => setDescription(e.target.value)}
-                    className="w-full px-4 py-2 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                    placeholder="Enter an optional description"
-                  ></textarea>
-                </div>
+                  <div className="mb-4">
+                    <label
+                      className="block text-secondary-700 dark:text-secondary-300 mb-2"
+                      htmlFor="description"
+                    >
+                      Description
+                    </label>
+                    <textarea
+                      id="description"
+                      value={description}
+                      onChange={(e) => setDescription(e.target.value)}
+                      className="w-full px-4 py-2 rounded-lg border border-secondary-200 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:bg-secondary-800 dark:border-secondary-700 dark:text-white"
+                      placeholder="Description (optional)"
+                      rows="3"
+                    ></textarea>
+                  </div>
 
-                <div className="flex justify-end space-x-3">
-                  <button
-                    type="button"
-                    onClick={() => navigateTo("home")}
-                    className="px-4 py-2 text-secondary-700 dark:text-secondary-300 hover:bg-secondary-100 dark:hover:bg-secondary-700 rounded-lg"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
-                  >
-                    Create Thread
-                  </button>
-                </div>
-              </form>
+                  <div className="mb-4">
+                    <label
+                      className="block text-secondary-700 dark:text-secondary-300 mb-2"
+                      htmlFor="topic"
+                    >
+                      Topic
+                    </label>
+                    <select
+                      id="topic"
+                      value={selectedTopic}
+                      onChange={(e) => setSelectedTopic(Number(e.target.value))}
+                      className="w-full px-4 py-2 rounded-lg border border-secondary-200 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:bg-secondary-800 dark:border-secondary-700 dark:text-white"
+                    >
+                      {topics.map((topic) => (
+                        <option key={topic.id} value={topic.id}>
+                          {topic.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* New field for initial action */}
+                  <div className="mb-6">
+                    <label
+                      className="block text-secondary-700 dark:text-secondary-300 mb-2"
+                      htmlFor="initialAction"
+                    >
+                      First Action (Optional)
+                    </label>
+                    <input
+                      id="initialAction"
+                      type="text"
+                      value={initialAction}
+                      onChange={(e) => setInitialAction(e.target.value)}
+                      className="w-full px-4 py-2 rounded-lg border border-secondary-200 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:bg-secondary-800 dark:border-secondary-700 dark:text-white"
+                      placeholder="First action for this thread"
+                    />
+                    <p className="mt-1 text-xs text-secondary-500 dark:text-secondary-400">
+                      Create your first sequential action for this thread
+                    </p>
+                  </div>
+
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => navigateTo("home")}
+                      className="px-4 py-2 mr-2 rounded-lg bg-secondary-100 text-secondary-700 hover:bg-secondary-200 focus:outline-none focus:ring-2 focus:ring-secondary-500 dark:bg-secondary-700 dark:text-secondary-300 dark:hover:bg-secondary-600"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-4 py-2 rounded-lg bg-primary-500 text-white hover:bg-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
+                    >
+                      Create Thread
+                    </button>
+                  </div>
+                </form>
+              )}
             </div>
           </div>
         );
       }
-
       // Actions list component
       function ActionsList({ db, navigateTo }) {
-        const [topics, setTopics] = React.useState([]);
-        const [selectedTopic, setSelectedTopic] = React.useState(0); // 0 means "All topics"
         const [actions, setActions] = React.useState([]);
-        const [filteredStatus, setFilteredStatus] = React.useState("all"); // "all", "pending", "completed", "delayed", "discarded", "delegated"
         const [loading, setLoading] = React.useState(true);
-        const [newAction, setNewAction] = React.useState("");
-        const [newActionTopic, setNewActionTopic] = React.useState(1); // Default to "All" topic
+        const [filter, setFilter] = React.useState("pending"); // pending, completed, all
+        const [topics, setTopics] = React.useState([]);
+        const [threads, setThreads] = React.useState([]);
 
         React.useEffect(() => {
+          async function loadData() {
+            setLoading(true);
+
+            // Load topics
+            const allTopics = await db.getAll("topics");
+            setTopics(allTopics);
+
+            // Load threads
+            const allThreads = await db.getAll("threads");
+            setThreads(allThreads);
+
+            // Load actions based on filter
+            await loadActions(filter);
+
+            setLoading(false);
+          }
+
           loadData();
-        }, [db, selectedTopic, filteredStatus]);
+        }, [db, filter]);
 
-        async function loadData() {
-          setLoading(true);
+        async function loadActions(statusFilter) {
+          let actionsToLoad;
 
-          // Load topics
-          const allTopics = await db.getAll("topics");
-          setTopics(allTopics);
-
-          // Load actions
-          await loadActions();
-
-          setLoading(false);
-        }
-
-        async function loadActions() {
-          let allActions = [];
-
-          // Filter by topic if selected
-          if (selectedTopic === 0) {
-            allActions = await db.getAll("actions");
+          if (statusFilter === "all") {
+            actionsToLoad = await db.getAll("actions");
           } else {
-            const index = db.transaction("actions").store.index("topicId");
-            allActions = await index.getAll(IDBKeyRange.only(selectedTopic));
-          }
+            const index = db.transaction("actions").store.index("status");
+            actionsToLoad = await index.getAll(IDBKeyRange.only(statusFilter));
 
-          // Filter by status if selected
-          if (filteredStatus !== "all") {
-            allActions = allActions.filter(
-              (action) => action.status === filteredStatus
-            );
-          }
-
-          // Sort by created date, most recent first
-          allActions.sort(
-            (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
-          );
-
-          // Mark untouched actions (older than a day with pending status)
-          const oneDayAgo = new Date();
-          oneDayAgo.setDate(oneDayAgo.getDate() - 1);
-
-          const processedActions = allActions.map((action) => {
-            const createdAt = new Date(action.createdAt);
-            if (createdAt < oneDayAgo && action.status === "pending") {
-              return { ...action, untouched: true };
+            // If showing pending actions, only include next actions from threads
+            if (statusFilter === "pending") {
+              actionsToLoad = actionsToLoad.filter(
+                (action) => !action.threadId || action.isNextAction
+              );
             }
-            return action;
-          });
+          }
 
-          setActions(processedActions);
+          setActions(actionsToLoad);
         }
 
-        const handleNewAction = async (e) => {
-          e.preventDefault();
-          if (!newAction.trim()) return;
-
-          const action = {
-            text: newAction,
-            status: "pending",
-            topicId: parseInt(newActionTopic),
-            createdAt: new Date().toISOString(),
-            due: null,
-          };
-
-          await db.add("actions", action);
-          setNewAction("");
-          await loadActions();
-        };
-
-        const handleStatusChange = async (actionId, newStatus) => {
+        // Handle action status change
+        const handleActionStatusChange = async (actionId, newStatus) => {
           const action = await db.get("actions", actionId);
+          const oldStatus = action.status;
+
+          // Update the action status
           action.status = newStatus;
           action.completedAt =
             newStatus === "completed" ? new Date().toISOString() : null;
-
+          action.isNextAction = false;
           await db.put("actions", action);
-          await loadActions();
+
+          // If this was a thread action and marked as next action, find the next action in sequence
+          if (action.threadId && action.isNextAction) {
+            // Get all actions for this thread
+            const threadIndex = db
+              .transaction("actions")
+              .store.index("threadId");
+            const threadActions = await threadIndex.getAll(
+              IDBKeyRange.only(action.threadId)
+            );
+
+            // Find actions with higher sequence that are pending
+            const nextActions = threadActions.filter(
+              (a) => a.sequence > action.sequence && a.status === "pending"
+            );
+
+            if (nextActions.length > 0) {
+              // Get the action with the lowest sequence number
+              const nextAction = nextActions.sort(
+                (a, b) => a.sequence - b.sequence
+              )[0];
+              nextAction.isNextAction = true;
+              await db.put("actions", nextAction);
+            }
+          }
+
+          // Reload actions with the same filter
+          await loadActions(filter);
         };
 
-        // Count actions by status for the badge counters
-        const countByStatus = (status) => {
-          if (status === "all") return actions.length;
-          return actions.filter((action) => action.status === status).length;
+        const getThreadInfo = (threadId) => {
+          return threads.find((t) => t.id === threadId) || null;
+        };
+
+        const getTopicInfo = (topicId) => {
+          return topics.find((t) => t.id === topicId) || null;
         };
 
         return (
-          <div className="max-w-7xl mx-auto px-4 py-6 animate-fade-in">
+          <div className="max-w-4xl mx-auto px-4 py-6 animate-fade-in">
             <div className="flex justify-between items-center mb-6">
-              <h2 className="text-2xl font-bold text-secondary-900 dark:text-secondary-100">
+              <h1 className="text-2xl font-bold text-secondary-900 dark:text-secondary-100">
                 Actions
-              </h2>
+              </h1>
             </div>
 
-            {/* Quick action entry */}
-            <form onSubmit={handleNewAction} className="mb-6">
-              <div className="grid grid-cols-4 gap-2">
-                <div className="col-span-3">
-                  <input
-                    type="text"
-                    value={newAction}
-                    onChange={(e) => setNewAction(e.target.value)}
-                    placeholder="Add a new action..."
-                    className="w-full px-4 py-3 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                  />
-                </div>
-                <div className="col-span-1 flex">
-                  <select
-                    value={newActionTopic}
-                    onChange={(e) => setNewActionTopic(e.target.value)}
-                    className="w-full px-2 py-3 rounded-l-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent text-sm"
-                  >
-                    {topics.map((topic) => (
-                      <option key={topic.id} value={topic.id}>
-                        {topic.name}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    type="submit"
-                    className="px-4 py-3 rounded-r-lg bg-primary-500 text-white hover:bg-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
-                  >
-                    Add
-                  </button>
-                </div>
-              </div>
-            </form>
-
-            {/* Topic filter */}
-            <div className="overflow-x-auto pb-3 mb-4">
-              <div className="flex space-x-2 w-max">
-                <button
-                  onClick={() => setSelectedTopic(0)}
-                  className={`px-4 py-2 rounded-full text-sm font-medium transition ${
-                    selectedTopic === 0
-                      ? "bg-primary-100 text-primary-800 dark:bg-primary-800 dark:text-primary-100"
-                      : "bg-white text-secondary-700 dark:bg-secondary-800 dark:text-secondary-300"
-                  } shadow-sm`}
-                >
-                  All Topics
-                </button>
-
-                {topics.map((topic) => (
-                  <button
-                    key={topic.id}
-                    onClick={() => setSelectedTopic(topic.id)}
-                    className={`px-4 py-2 rounded-full text-sm font-medium transition ${
-                      selectedTopic === topic.id
-                        ? "bg-primary-100 text-primary-800 dark:bg-primary-800 dark:text-primary-100"
-                        : "bg-white text-secondary-700 dark:bg-secondary-800 dark:text-secondary-300"
-                    } shadow-sm`}
-                    style={
-                      selectedTopic === topic.id
-                        ? {
-                            backgroundColor: `${topic.color}20`,
-                            color: topic.color,
-                          }
-                        : {}
-                    }
-                  >
-                    {topic.name}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Status filter */}
-            <div className="overflow-x-auto pb-3 mb-6">
-              <div className="flex space-x-2 w-max">
-                <button
-                  onClick={() => setFilteredStatus("all")}
-                  className={`px-4 py-2 rounded-full text-sm font-medium flex items-center ${
-                    filteredStatus === "all"
-                      ? "bg-secondary-200 text-secondary-800 dark:bg-secondary-700 dark:text-secondary-100"
-                      : "bg-white text-secondary-700 dark:bg-secondary-800 dark:text-secondary-300"
-                  } shadow-sm`}
-                >
-                  <span>All</span>
-                  <span className="ml-1 px-1.5 py-0.5 text-xs bg-secondary-300 dark:bg-secondary-600 rounded-full">
-                    {countByStatus("all")}
-                  </span>
-                </button>
-
-                <button
-                  onClick={() => setFilteredStatus("pending")}
-                  className={`px-4 py-2 rounded-full text-sm font-medium flex items-center ${
-                    filteredStatus === "pending"
-                      ? "bg-secondary-200 text-secondary-800 dark:bg-secondary-700 dark:text-secondary-100"
-                      : "bg-white text-secondary-700 dark:bg-secondary-800 dark:text-secondary-300"
-                  } shadow-sm`}
-                >
-                  <span>Pending</span>
-                  <span className="ml-1 px-1.5 py-0.5 text-xs bg-secondary-300 dark:bg-secondary-600 rounded-full">
-                    {countByStatus("pending")}
-                  </span>
-                </button>
-
-                <button
-                  onClick={() => setFilteredStatus("completed")}
-                  className={`px-4 py-2 rounded-full text-sm font-medium flex items-center ${
-                    filteredStatus === "completed"
-                      ? "bg-accent-100 text-accent-800 dark:bg-accent-800 dark:text-accent-100"
-                      : "bg-white text-secondary-700 dark:bg-secondary-800 dark:text-secondary-300"
-                  } shadow-sm`}
-                >
-                  <span>Completed</span>
-                  <span className="ml-1 px-1.5 py-0.5 text-xs bg-accent-200 dark:bg-accent-700 rounded-full">
-                    {countByStatus("completed")}
-                  </span>
-                </button>
-
-                <button
-                  onClick={() => setFilteredStatus("delayed")}
-                  className={`px-4 py-2 rounded-full text-sm font-medium flex items-center ${
-                    filteredStatus === "delayed"
-                      ? "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-100"
-                      : "bg-white text-secondary-700 dark:bg-secondary-800 dark:text-secondary-300"
-                  } shadow-sm`}
-                >
-                  <span>Delayed</span>
-                  <span className="ml-1 px-1.5 py-0.5 text-xs bg-orange-200 dark:bg-orange-800 rounded-full">
-                    {countByStatus("delayed")}
-                  </span>
-                </button>
-
-                <button
-                  onClick={() => setFilteredStatus("discarded")}
-                  className={`px-4 py-2 rounded-full text-sm font-medium flex items-center ${
-                    filteredStatus === "discarded"
-                      ? "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-100"
-                      : "bg-white text-secondary-700 dark:bg-secondary-800 dark:text-secondary-300"
-                  } shadow-sm`}
-                >
-                  <span>Discarded</span>
-                  <span className="ml-1 px-1.5 py-0.5 text-xs bg-red-200 dark:bg-red-800 rounded-full">
-                    {countByStatus("discarded")}
-                  </span>
-                </button>
-
-                <button
-                  onClick={() => setFilteredStatus("delegated")}
-                  className={`px-4 py-2 rounded-full text-sm font-medium flex items-center ${
-                    filteredStatus === "delegated"
-                      ? "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-100"
-                      : "bg-white text-secondary-700 dark:bg-secondary-800 dark:text-secondary-300"
-                  } shadow-sm`}
-                >
-                  <span>Delegated</span>
-                  <span className="ml-1 px-1.5 py-0.5 text-xs bg-blue-200 dark:bg-blue-800 rounded-full">
-                    {countByStatus("delegated")}
-                  </span>
-                </button>
-              </div>
+            {/* Filter tabs */}
+            <div className="flex border-b border-secondary-200 dark:border-secondary-700 mb-6">
+              <button
+                onClick={() => setFilter("pending")}
+                className={`px-4 py-2 -mb-px ${
+                  filter === "pending"
+                    ? "border-b-2 border-primary-500 text-primary-600 dark:text-primary-400"
+                    : "text-secondary-500 dark:text-secondary-400"
+                }`}
+              >
+                Pending
+              </button>
+              <button
+                onClick={() => setFilter("completed")}
+                className={`px-4 py-2 -mb-px ${
+                  filter === "completed"
+                    ? "border-b-2 border-primary-500 text-primary-600 dark:text-primary-400"
+                    : "text-secondary-500 dark:text-secondary-400"
+                }`}
+              >
+                Completed
+              </button>
+              <button
+                onClick={() => setFilter("all")}
+                className={`px-4 py-2 -mb-px ${
+                  filter === "all"
+                    ? "border-b-2 border-primary-500 text-primary-600 dark:text-primary-400"
+                    : "text-secondary-500 dark:text-secondary-400"
+                }`}
+              >
+                All
+              </button>
             </div>
 
             {loading ? (
@@ -1716,169 +1885,107 @@
                 <div className="w-10 h-10 border-4 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
               </div>
             ) : actions.length > 0 ? (
-              <div className="space-y-3">
+              <div className="space-y-4">
                 {actions.map((action) => {
-                  const topic = topics.find((t) => t.id === action.topicId) || {
-                    name: "Unknown",
-                    color: "#64748b",
-                  };
+                  const thread = action.threadId
+                    ? getThreadInfo(action.threadId)
+                    : null;
+                  const topic = action.topicId
+                    ? getTopicInfo(action.topicId)
+                    : null;
 
                   return (
                     <div
                       key={action.id}
-                      className={`bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-4 ${
+                      className={`bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-4 border-l-4 ${
                         action.status === "completed"
-                          ? "border-l-4 border-accent-500"
-                          : action.status === "delayed"
-                          ? "border-l-4 border-orange-500"
+                          ? "border-accent-500"
                           : action.status === "discarded"
-                          ? "border-l-4 border-red-500"
+                          ? "border-red-500"
                           : action.status === "delegated"
-                          ? "border-l-4 border-blue-500"
-                          : action.untouched
-                          ? "border-l-4 border-red-500"
-                          : "border-l-4 border-secondary-300 dark:border-secondary-600"
+                          ? "border-blue-500"
+                          : "border-secondary-300 dark:border-secondary-600"
                       }`}
                     >
                       <div className="flex items-start">
                         {action.status === "pending" && (
                           <button
                             onClick={() =>
-                              handleStatusChange(action.id, "completed")
+                              handleActionStatusChange(action.id, "completed")
                             }
-                            className="w-6 h-6 rounded-full border-2 border-secondary-300 dark:border-secondary-500 hover:border-accent-500 dark:hover:border-accent-400 mr-3 flex-shrink-0 mt-0.5"
+                            className="w-6 h-6 rounded-full border-2 border-secondary-300 dark:border-secondary-500 hover:border-accent-500 dark:hover:border-accent-400 mr-3 flex-shrink-0 mt-1"
                             aria-label="Mark as completed"
                           ></button>
                         )}
 
-                        {action.status === "completed" && (
-                          <div className="w-6 h-6 rounded-full bg-accent-500 mr-3 flex-shrink-0 mt-0.5 flex items-center justify-center">
-                            <svg
-                              xmlns="http://www.w3.org/2000/svg"
-                              className="h-4 w-4 text-white"
-                              fill="none"
-                              viewBox="0 0 24 24"
-                              stroke="currentColor"
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                strokeWidth={2}
-                                d="M5 13l4 4L19 7"
-                              />
-                            </svg>
-                          </div>
-                        )}
-
-                        {(action.status === "delayed" ||
-                          action.status === "discarded" ||
-                          action.status === "delegated") && (
-                          <div className="w-6 h-6 mr-3 flex-shrink-0 mt-0.5"></div>
-                        )}
-
                         <div className="flex-grow">
-                          <div className="flex justify-between items-start">
-                            <p
-                              className={`text-secondary-900 dark:text-secondary-100 ${
-                                action.status === "completed" ||
-                                action.status === "discarded"
-                                  ? "line-through opacity-70"
-                                  : ""
-                              }`}
-                            >
-                              {action.text}
-                            </p>
-                            <span
-                              className="ml-3 px-2 py-1 text-xs rounded-full flex-shrink-0"
-                              style={{
-                                backgroundColor: `${topic.color}20`,
-                                color: topic.color,
-                              }}
-                            >
-                              {topic.name}
-                            </span>
-                          </div>
+                          <div className="flex flex-wrap items-center gap-2 mb-1">
+                            {thread && (
+                              <span
+                                onClick={() => navigateTo("thread", thread)}
+                                className="text-xs px-2 py-1 bg-secondary-100 dark:bg-secondary-700 rounded-full cursor-pointer hover:bg-secondary-200 dark:hover:bg-secondary-600"
+                              >
+                                Thread: {thread.title}
+                              </span>
+                            )}
 
-                          <div className="flex items-center mt-2 text-sm">
-                            <span className="text-secondary-500 dark:text-secondary-400">
-                              {formatDate(action.createdAt)}
-                            </span>
+                            {topic && (
+                              <span
+                                className="text-xs px-2 py-1 rounded-full"
+                                style={{
+                                  backgroundColor: `${topic.color}20`,
+                                  color: topic.color,
+                                }}
+                              >
+                                {topic.name}
+                              </span>
+                            )}
 
-                            {action.untouched &&
-                              action.status === "pending" && (
-                                <span className="ml-3 text-xs font-medium text-red-600 dark:text-red-400">
-                                  Untouched for over a day
-                                </span>
-                              )}
+                            {action.isNextAction && action.threadId && (
+                              <span className="text-xs px-2 py-1 bg-primary-100 text-primary-800 dark:bg-primary-900 dark:text-primary-200 rounded-full">
+                                Next Action
+                              </span>
+                            )}
 
                             {action.status !== "pending" && (
                               <span
-                                className={`ml-3 px-2 py-0.5 text-xs rounded-full ${
+                                className={`text-xs px-2 py-1 rounded-full ${
                                   action.status === "completed"
-                                    ? "bg-accent-100 text-accent-800 dark:bg-accent-900 dark:text-accent-100"
-                                    : action.status === "delayed"
-                                    ? "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-100"
+                                    ? "bg-accent-100 text-accent-800 dark:bg-accent-900 dark:text-accent-200"
                                     : action.status === "discarded"
-                                    ? "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-100"
-                                    : "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-100"
+                                    ? "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200"
+                                    : "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200"
                                 }`}
                               >
-                                {action.status.charAt(0).toUpperCase() +
-                                  action.status.slice(1)}
+                                {action.status}
                               </span>
                             )}
                           </div>
+
+                          <p
+                            className={`text-secondary-900 dark:text-secondary-100 ${
+                              action.status === "completed" ||
+                              action.status === "discarded"
+                                ? "line-through text-secondary-500 dark:text-secondary-400"
+                                : ""
+                            }`}
+                          >
+                            {action.text}
+                          </p>
+
+                          {action.completedAt && (
+                            <p className="mt-1 text-xs text-secondary-500 dark:text-secondary-400">
+                              {action.status} on{" "}
+                              {new Date(action.completedAt).toLocaleString()}
+                            </p>
+                          )}
                         </div>
 
                         {action.status === "pending" && (
                           <div className="flex space-x-1 ml-2">
                             <button
                               onClick={() =>
-                                handleStatusChange(action.id, "delayed")
-                              }
-                              className="text-orange-500 hover:text-orange-600 dark:hover:text-orange-400 p-2"
-                              title="Delay"
-                            >
-                              <svg
-                                xmlns="http://www.w3.org/2000/svg"
-                                className="h-5 w-5"
-                                fill="none"
-                                viewBox="0 0 24 24"
-                                stroke="currentColor"
-                              >
-                                <path
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  strokeWidth={2}
-                                  d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
-                                />
-                              </svg>
-                            </button>
-                            <button
-                              onClick={() =>
-                                handleStatusChange(action.id, "discarded")
-                              }
-                              className="text-red-500 hover:text-red-600 dark:hover:text-red-400 p-2"
-                              title="Discard"
-                            >
-                              <svg
-                                xmlns="http://www.w3.org/2000/svg"
-                                className="h-5 w-5"
-                                fill="none"
-                                viewBox="0 0 24 24"
-                                stroke="currentColor"
-                              >
-                                <path
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  strokeWidth={2}
-                                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                                />
-                              </svg>
-                            </button>
-                            <button
-                              onClick={() =>
-                                handleStatusChange(action.id, "delegated")
+                                handleActionStatusChange(action.id, "delegated")
                               }
                               className="text-blue-500 hover:text-blue-600 dark:hover:text-blue-400 p-2"
                               title="Delegate"
@@ -1898,6 +2005,28 @@
                                 />
                               </svg>
                             </button>
+                            <button
+                              onClick={() =>
+                                handleActionStatusChange(action.id, "discarded")
+                              }
+                              className="text-red-500 hover:text-red-600 dark:hover:text-red-400 p-2"
+                              title="Discard"
+                            >
+                              <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                className="h-5 w-5"
+                                fill="none"
+                                viewBox="0 0 24 24"
+                                stroke="currentColor"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                                />
+                              </svg>
+                            </button>
                           </div>
                         )}
                       </div>
@@ -1908,7 +2037,7 @@
             ) : (
               <div className="bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-6 text-center">
                 <p className="text-secondary-600 dark:text-secondary-400">
-                  No actions found with the selected filters.
+                  No actions found with the current filter.
                 </p>
               </div>
             )}
