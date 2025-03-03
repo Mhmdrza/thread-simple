@@ -1,0 +1,1934 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mental Thread Tracker</title>
+    <script src="https://unpkg.com/react@17/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@17/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/dexie@3.2.2/dist/dexie.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/react-transition-group@4.4.2/dist/react-transition-group.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: {
+                            light: '#8ECAE6',
+                            DEFAULT: '#219EBC',
+                            dark: '#023047',
+                        },
+                        secondary: {
+                            light: '#FFB703',
+                            DEFAULT: '#FB8500',
+                            dark: '#D16002',
+                        },
+                        neutral: {
+                            lightest: '#F8F9FA',
+                            light: '#E9ECEF',
+                            DEFAULT: '#DEE2E6',
+                            dark: '#CED4DA',
+                            darkest: '#ADB5BD',
+                        }
+                    },
+                    animation: {
+                        'fade-in': 'fadeIn 0.3s ease-in-out',
+                        'slide-up': 'slideUp 0.3s ease-in-out',
+                    },
+                    keyframes: {
+                        fadeIn: {
+                            '0%': { opacity: '0' },
+                            '100%': { opacity: '1' },
+                        },
+                        slideUp: {
+                            '0%': { transform: 'translateY(20px)', opacity: '0' },
+                            '100%': { transform: 'translateY(0)', opacity: '1' },
+                        },
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        .page-transition-enter {
+            opacity: 0;
+            transform: translateY(10px);
+        }
+        .page-transition-enter-active {
+            opacity: 1;
+            transform: translateY(0);
+            transition: opacity 300ms, transform 300ms;
+        }
+        .page-transition-exit {
+            opacity: 1;
+        }
+        .page-transition-exit-active {
+            opacity: 0;
+            transform: translateY(10px);
+            transition: opacity 300ms, transform 300ms;
+        }
+        
+        /* Progress bar animation */
+        @keyframes progress {
+            0% { width: 0%; }
+        }
+        .animate-progress {
+            animation: progress 1s ease-out forwards;
+        }
+        
+        /* Confetti animation for gamification */
+        @keyframes confetti-fall {
+            0% { transform: translateY(-100px) rotate(0deg); opacity: 1; }
+            100% { transform: translateY(100vh) rotate(720deg); opacity: 0; }
+        }
+        .confetti {
+            position: fixed;
+            width: 10px;
+            height: 10px;
+            background-color: #FFB703;
+            animation: confetti-fall 4s ease-out forwards;
+            z-index: 9999;
+        }
+    </style>
+</head>
+<body class="bg-neutral-lightest text-primary-dark">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        // Initialize Dexie.js (IndexedDB wrapper)
+        const db = new Dexie('MentalThreadTracker');
+        db.version(1).stores({
+            topics: '++id, name, createdAt',
+            threads: '++id, topicId, title, status, progress, createdAt',
+            updates: '++id, threadId, content, timestamp',
+            actions: '++id, title, status, dueDate, threadId, topicId, assignedTo, createdAt',
+            actionGenerators: '++id, title, interval, startDate, endDate, topicId, createdAt, lastGenerated',
+            users: '++id, phoneNumber, name, createdAt'
+        });
+
+        // Initialize the database with sample data
+        async function initializeDatabase() {
+            const topicsCount = await db.topics.count();
+            
+            if (topicsCount === 0) {
+                // Add sample topics
+                const topicIds = await db.transaction('rw', db.topics, async () => {
+                    return {
+                        work: await db.topics.add({
+                            name: 'Work',
+                            createdAt: new Date()
+                        }),
+                        household: await db.topics.add({
+                            name: 'Household',
+                            createdAt: new Date()
+                        }),
+                        personal: await db.topics.add({
+                            name: 'Personal Development',
+                            createdAt: new Date()
+                        })
+                    };
+                });
+                
+                // Add sample threads
+                const threadIds = await db.transaction('rw', db.threads, async () => {
+                    return {
+                        project: await db.threads.add({
+                            topicId: topicIds.work,
+                            title: 'Project X Development',
+                            status: 'open',
+                            progress: 30,
+                            createdAt: new Date()
+                        }),
+                        cleaning: await db.threads.add({
+                            topicId: topicIds.household,
+                            title: 'Home Cleaning Schedule',
+                            status: 'open',
+                            progress: 50,
+                            createdAt: new Date()
+                        }),
+                        meditation: await db.threads.add({
+                            topicId: topicIds.personal,
+                            title: 'Daily Meditation Practice',
+                            status: 'open',
+                            progress: 20,
+                            createdAt: new Date()
+                        })
+                    };
+                });
+                
+                // Add sample updates
+                await db.transaction('rw', db.updates, async () => {
+                    await db.updates.bulkAdd([
+                        {
+                            threadId: threadIds.project,
+                            content: 'Started requirement gathering',
+                            timestamp: new Date(Date.now() - 86400000 * 3)
+                        },
+                        {
+                            threadId: threadIds.project,
+                            content: 'Completed initial wireframes',
+                            timestamp: new Date(Date.now() - 86400000)
+                        },
+                        {
+                            threadId: threadIds.cleaning,
+                            content: 'Created weekly cleaning checklist',
+                            timestamp: new Date(Date.now() - 86400000 * 2)
+                        },
+                        {
+                            threadId: threadIds.meditation,
+                            content: 'Researched meditation techniques',
+                            timestamp: new Date()
+                        }
+                    ]);
+                });
+                
+                // Add sample actions
+                await db.transaction('rw', db.actions, async () => {
+                    await db.actions.bulkAdd([
+                        {
+                            title: 'Design database schema',
+                            status: 'pending',
+                            dueDate: new Date(),
+                            threadId: threadIds.project,
+                            topicId: topicIds.work,
+                            assignedTo: null,
+                            createdAt: new Date(Date.now() - 86400000)
+                        },
+                        {
+                            title: 'Clean bathroom',
+                            status: 'pending',
+                            dueDate: new Date(),
+                            threadId: threadIds.cleaning,
+                            topicId: topicIds.household,
+                            assignedTo: null,
+                            createdAt: new Date(Date.now() - 86400000 * 2)
+                        },
+                        {
+                            title: 'Practice 10-minute meditation',
+                            status: 'pending',
+                            dueDate: new Date(),
+                            threadId: threadIds.meditation,
+                            topicId: topicIds.personal,
+                            assignedTo: null,
+                            createdAt: new Date(Date.now() - 86400000)
+                        }
+                    ]);
+                });
+                
+                // Add sample action generators
+                await db.transaction('rw', db.actionGenerators, async () => {
+                    await db.actionGenerators.bulkAdd([
+                        {
+                            title: 'Daily Meditation',
+                            interval: 'daily',
+                            startDate: new Date(),
+                            endDate: new Date(Date.now() + 86400000 * 40),
+                            topicId: topicIds.personal,
+                            createdAt: new Date(),
+                            lastGenerated: new Date(Date.now() - 86400000)
+                        },
+                        {
+                            title: 'Weekly Team Meeting',
+                            interval: 'weekly',
+                            startDate: new Date(),
+                            endDate: null,
+                            topicId: topicIds.work,
+                            createdAt: new Date(),
+                            lastGenerated: new Date(Date.now() - 86400000 * 7)
+                        }
+                    ]);
+                });
+            }
+        }
+
+        // React Context for Authentication
+        const AuthContext = React.createContext();
+
+        function AuthProvider({ children }) {
+            const [user, setUser] = React.useState(null);
+            const [loading, setLoading] = React.useState(true);
+
+            React.useEffect(() => {
+                // Check if user is logged in from local storage
+                const savedUser = localStorage.getItem('currentUser');
+                if (savedUser) {
+                    setUser(JSON.parse(savedUser));
+                }
+                setLoading(false);
+            }, []);
+
+            const login = async (phoneNumber) => {
+                // In a real app, this would validate with a backend
+                let user = await db.users.where('phoneNumber').equals(phoneNumber).first();
+                
+                if (!user) {
+                    // Create new user if not found
+                    const id = await db.users.add({
+                        phoneNumber,
+                        name: `User ${phoneNumber.substring(phoneNumber.length - 4)}`,
+                        createdAt: new Date()
+                    });
+                    user = await db.users.get(id);
+                }
+                
+                setUser(user);
+                localStorage.setItem('currentUser', JSON.stringify(user));
+                return user;
+            };
+
+            const logout = () => {
+                setUser(null);
+                localStorage.removeItem('currentUser');
+            };
+
+            return (
+                <AuthContext.Provider value={{ user, login, logout, loading }}>
+                    {children}
+                </AuthContext.Provider>
+            );
+        }
+
+        // Custom hook for using auth
+        function useAuth() {
+            return React.useContext(AuthContext);
+        }
+
+        // Utility functions
+        function formatDate(date) {
+            if (!date) return '';
+            const d = new Date(date);
+            return d.toLocaleDateString('en-US', { 
+                year: 'numeric', 
+                month: 'short', 
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+        }
+
+        function formatDateShort(date) {
+            if (!date) return '';
+            const d = new Date(date);
+            return d.toLocaleDateString('en-US', { 
+                month: 'short', 
+                day: 'numeric'
+            });
+        }
+
+        // Toast notification component
+        function Toast({ message, type = 'success', onClose }) {
+            React.useEffect(() => {
+                const timer = setTimeout(() => {
+                    onClose();
+                }, 3000);
+                return () => clearTimeout(timer);
+            }, [onClose]);
+
+            const bgColor = type === 'success' ? 'bg-green-500' : 
+                          type === 'error' ? 'bg-red-500' : 
+                          type === 'info' ? 'bg-blue-500' : 'bg-yellow-500';
+
+            return (
+                <div className={`fixed bottom-20 left-1/2 transform -translate-x-1/2 ${bgColor} text-white px-4 py-2 rounded-lg shadow-lg animate-slide-up`}>
+                    {message}
+                </div>
+            );
+        }
+
+        // Toast context
+        const ToastContext = React.createContext();
+
+        function ToastProvider({ children }) {
+            const [toast, setToast] = React.useState(null);
+
+            const showToast = (message, type = 'success') => {
+                setToast({ message, type });
+            };
+
+            const hideToast = () => {
+                setToast(null);
+            };
+
+            return (
+                <ToastContext.Provider value={{ showToast }}>
+                    {children}
+                    {toast && <Toast message={toast.message} type={toast.type} onClose={hideToast} />}
+                </ToastContext.Provider>
+            );
+        }
+
+        // Custom hook for using toast
+        function useToast() {
+            return React.useContext(ToastContext);
+        }
+
+        // Confetti component for gamification
+        function Confetti({ count = 50 }) {
+            const [confetti, setConfetti] = React.useState([]);
+            
+            React.useEffect(() => {
+                const pieces = [];
+                for (let i = 0; i < count; i++) {
+                    pieces.push({
+                        id: i,
+                        x: Math.random() * window.innerWidth,
+                        delay: Math.random() * 2,
+                        color: ['#FFB703', '#FB8500', '#219EBC', '#8ECAE6'][Math.floor(Math.random() * 4)]
+                    });
+                }
+                setConfetti(pieces);
+                
+                const timer = setTimeout(() => {
+                    setConfetti([]);
+                }, 4000);
+                
+                return () => clearTimeout(timer);
+            }, [count]);
+            
+            return (
+                <>
+                    {confetti.map(piece => (
+                        <div 
+                            key={piece.id}
+                            className="confetti"
+                            style={{
+                                left: `${piece.x}px`,
+                                backgroundColor: piece.color,
+                                animationDelay: `${piece.delay}s`
+                            }}
+                        />
+                    ))}
+                </>
+            );
+        }
+
+        // Login Page
+        function LoginPage() {
+            const [phoneNumber, setPhoneNumber] = React.useState('');
+            const [isLoading, setIsLoading] = React.useState(false);
+            const { login } = useAuth();
+            const { showToast } = useToast();
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                if (!phoneNumber || phoneNumber.length < 10) {
+                    showToast('Please enter a valid phone number', 'error');
+                    return;
+                }
+                
+                setIsLoading(true);
+                try {
+                    await login(phoneNumber);
+                    showToast('Login successful!', 'success');
+                } catch (error) {
+                    showToast('Login failed. Please try again.', 'error');
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+
+            return (
+                <div className="min-h-screen flex flex-col justify-center items-center p-4 bg-primary-light bg-opacity-10 animate-fade-in">
+                    <div className="w-full max-w-md bg-white rounded-xl shadow-lg p-8">
+                        <h1 className="text-3xl font-bold text-center text-primary-dark mb-8">Mental Thread Tracker</h1>
+                        <p className="text-neutral-darkest mb-8 text-center">Track your thoughts, manage your actions, and boost your productivity</p>
+                        
+                        <form onSubmit={handleSubmit} className="space-y-6">
+                            <div>
+                                <label htmlFor="phoneNumber" className="block text-sm font-medium text-gray-700 mb-1">
+                                    Phone Number
+                                </label>
+                                <input
+                                    id="phoneNumber"
+                                    type="tel"
+                                    placeholder="Enter your phone number"
+                                    value={phoneNumber}
+                                    onChange={(e) => setPhoneNumber(e.target.value)}
+                                    className="w-full px-4 py-3 rounded-lg border border-neutral-dark focus:outline-none focus:ring-2 focus:ring-primary"
+                                    required
+                                />
+                            </div>
+                            
+                            <button
+                                type="submit"
+                                disabled={isLoading}
+                                className={`w-full py-3 px-4 bg-primary text-white rounded-lg font-medium transition-all 
+                                    ${isLoading ? 'opacity-70 cursor-not-allowed' : 'hover:bg-primary-dark'}`}
+                            >
+                                {isLoading ? 'Logging in...' : 'Continue'}
+                            </button>
+                        </form>
+                        
+                        <p className="mt-6 text-sm text-center text-neutral-darkest">
+                            By continuing, you agree to our Terms of Service and Privacy Policy.
+                        </p>
+                    </div>
+                </div>
+            );
+        }
+
+        // Action Card Component
+        function ActionCard({ action, onActionUpdate, topicName, threadTitle }) {
+            const { showToast } = useToast();
+            const [showConfetti, setShowConfetti] = React.useState(false);
+
+            const handleAction = async (status) => {
+                try {
+                    await db.actions.update(action.id, { status });
+                    
+                    if (status === 'done') {
+                        setShowConfetti(true);
+                        showToast('Action completed! Great job!', 'success');
+                    } else if (status === 'delayed') {
+                        const tomorrow = new Date();
+                        tomorrow.setDate(tomorrow.getDate() + 1);
+                        await db.actions.update(action.id, { dueDate: tomorrow });
+                        showToast('Action delayed to tomorrow', 'info');
+                    } else if (status === 'discarded') {
+                        showToast('Action discarded', 'info');
+                    } else if (status === 'delegated') {
+                        showToast('Action delegated (feature coming soon)', 'info');
+                    }
+                    
+                    if (onActionUpdate) onActionUpdate();
+                } catch (error) {
+                    console.error('Error updating action:', error);
+                    showToast('Failed to update action', 'error');
+                }
+            };
+
+            return (
+                <div className="bg-white rounded-lg shadow-md p-4 mb-3 animate-fade-in">
+                    {showConfetti && <Confetti />}
+                    <div className="flex justify-between items-start mb-2">
+                        <h3 className="font-medium text-primary-dark">{action.title}</h3>
+                        <span className="text-xs bg-neutral-light text-primary-dark px-2 py-1 rounded">
+                            {formatDateShort(action.dueDate)}
+                        </span>
+                    </div>
+                    
+                    <div className="text-xs text-neutral-darkest mb-3">
+                        {topicName && <span className="mr-2">{topicName}</span>}
+                        {threadTitle && <span>• {threadTitle}</span>}
+                    </div>
+                    
+                    <div className="flex space-x-2">
+                        <button 
+                            onClick={() => handleAction('done')}
+                            className="flex-1 py-1 px-2 bg-green-500 text-white rounded text-sm hover:bg-green-600 transition-colors"
+                        >
+                            Done
+                        </button>
+                        <button 
+                            onClick={() => handleAction('delayed')}
+                            className="flex-1 py-1 px-2 bg-yellow-500 text-white rounded text-sm hover:bg-yellow-600 transition-colors"
+                        >
+                            Delay
+                        </button>
+                        <button 
+                            onClick={() => handleAction('discarded')}
+                            className="flex-1 py-1 px-2 bg-red-500 text-white rounded text-sm hover:bg-red-600 transition-colors"
+                        >
+                            Discard
+                        </button>
+                        <button 
+                            onClick={() => handleAction('delegated')}
+                            className="flex-1 py-1 px-2 bg-blue-500 text-white rounded text-sm hover:bg-blue-600 transition-colors"
+                        >
+                            Delegate
+                        </button>
+                    </div>
+                </div>
+            );
+        }
+
+        // Thread Card Component
+        function ThreadCard({ thread, topic, latestUpdate, nextAction, onActionUpdate, onThreadUpdate }) {
+            const { showToast } = useToast();
+            const [isExpanded, setIsExpanded] = React.useState(false);
+            const [newUpdate, setNewUpdate] = React.useState('');
+            const [showUpdateForm, setShowUpdateForm] = React.useState(false);
+            const [showActionForm, setShowActionForm] = React.useState(false);
+            const [newAction, setNewAction] = React.useState('');
+            const [isEditing, setIsEditing] = React.useState(false);
+            const [progress, setProgress] = React.useState(thread.progress || 0);
+
+            const handleToggleStatus = async () => {
+                try {
+                    const newStatus = thread.status === 'open' ? 'closed' : 'open';
+                    await db.threads.update(thread.id, { status: newStatus });
+                    showToast(`Thread ${newStatus === 'open' ? 'reopened' : 'closed'}`, 'success');
+                    if (onThreadUpdate) onThreadUpdate();
+                } catch (error) {
+                    console.error('Error updating thread status:', error);
+                    showToast('Failed to update thread status', 'error');
+                }
+            };
+
+            const handleAddUpdate = async (e) => {
+                e.preventDefault();
+                if (!newUpdate.trim()) return;
+                
+                try {
+                    await db.updates.add({
+                        threadId: thread.id,
+                        content: newUpdate,
+                        timestamp: new Date()
+                    });
+                    setNewUpdate('');
+                    setShowUpdateForm(false);
+                    showToast('Update added successfully', 'success');
+                    if (onThreadUpdate) onThreadUpdate();
+                } catch (error) {
+                    console.error('Error adding update:', error);
+                    showToast('Failed to add update', 'error');
+                }
+            };
+
+            const handleAddAction = async (e) => {
+                e.preventDefault();
+                if (!newAction.trim()) return;
+                
+                try {
+                    await db.actions.add({
+                        title: newAction,
+                        status: 'pending',
+                        dueDate: new Date(),
+                        threadId: thread.id,
+                        topicId: thread.topicId,
+                        assignedTo: null,
+                        createdAt: new Date()
+                    });
+                    setNewAction('');
+                    setShowActionForm(false);
+                    showToast('Action added successfully', 'success');
+                    if (onActionUpdate) onActionUpdate();
+                } catch (error) {
+                    console.error('Error adding action:', error);
+                    showToast('Failed to add action', 'error');
+                }
+            };
+
+            const handleUpdateProgress = async () => {
+                try {
+                    await db.threads.update(thread.id, { progress });
+                    setIsEditing(false);
+                    showToast('Progress updated', 'success');
+                    if (onThreadUpdate) onThreadUpdate();
+                } catch (error) {
+                    console.error('Error updating progress:', error);
+                    showToast('Failed to update progress', 'error');
+                }
+            };
+
+            return (
+                <div className={`bg-white rounded-lg shadow-md p-4 mb-4 animate-fade-in 
+                    ${thread.status === 'closed' ? 'opacity-70' : ''}`}>
+                    <div className="flex justify-between items-start mb-2">
+                        <div>
+                            <h3 className="font-medium text-primary-dark">{thread.title}</h3>
+                            <span className="text-xs text-neutral-darkest">{topic?.name}</span>
+                        </div>
+                        <div className="flex items-center">
+                            <span className={`text-xs px-2 py-1 rounded mr-2 
+                                ${thread.status === 'open' ? 'bg-green-100 text-green-800' : 'bg-neutral-light text-neutral-darkest'}`}>
+                                {thread.status}
+                            </span>
+                            <button 
+                                onClick={() => setIsExpanded(!isExpanded)}
+                                className="text-primary hover:text-primary-dark"
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                    {isExpanded ? (
+                                        <path fillRule="evenodd" d="M14.707 12.707a1 1 0 01-1.414 0L10 9.414l-3.293 3.293a1 1 0 01-1.414-1.414l4-4a1 1 0 011.414 0l4 4a1 1 0 010 1.414z" clipRule="evenodd" />
+                                    ) : (
+                                        <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
+                                    )}
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div className="mb-3">
+                        <div className="flex justify-between items-center mb-1">
+                            <span className="text-xs text-neutral-darkest">Progress</span>
+                            {isEditing ? (
+                                <button 
+                                    onClick={handleUpdateProgress}
+                                    className="text-xs text-primary hover:text-primary-dark"
+                                >
+                                    Save
+                                </button>
+                            ) : (
+                                <button 
+                                    onClick={() => setIsEditing(true)}
+                                    className="text-xs text-primary hover:text-primary-dark"
+                                >
+                                    Edit
+                                </button>
+                            )}
+                        </div>
+                        
+                        {isEditing ? (
+                            <input 
+                                type="range" 
+                                min="0" 
+                                max="100" 
+                                value={progress} 
+                                onChange={(e) => setProgress(parseInt(e.target.value))}
+                                className="w-full"
+                            />
+                        ) : (
+                            <div className="w-full bg-neutral-light rounded-full h-2">
+                                <div 
+                                    className="bg-primary h-2 rounded-full animate-progress" 
+                                    style={{ width: `${thread.progress}%` }}
+                                ></div>
+                            </div>
+                        )}
+                        <span className="text-xs text-neutral-darkest">{thread.progress}%</span>
+                    </div>
+                    
+                    {latestUpdate && (
+                        <div className="mb-3 p-2 bg-neutral-lightest rounded">
+                            <div className="text-sm">{latestUpdate.content}</div>
+                            <div className="text-xs text-neutral-darkest mt-1">{formatDate(latestUpdate.timestamp)}</div>
+                        </div>
+                    )}
+                    
+                    {nextAction && (
+                        <div className="mb-3">
+                            <div className="text-xs text-neutral-darkest mb-1">Next Action:</div>
+                            <ActionCard 
+                                action={nextAction} 
+                                onActionUpdate={onActionUpdate} 
+                                topicName={null}
+                                threadTitle={null}
+                            />
+                        </div>
+                    )}
+                    
+                    {isExpanded && (
+                        <div className="mt-4 space-y-3 animate-fade-in">
+                            <div className="flex space-x-2">
+                                <button 
+                                    onClick={() => setShowUpdateForm(!showUpdateForm)}
+                                    className="flex-1 py-2 px-3 bg-primary text-white rounded-lg text-sm hover:bg-primary-dark transition-colors"
+                                >
+                                    Add Update
+                                </button>
+                                <button 
+                                    onClick={() => setShowActionForm(!showActionForm)}
+                                    className="flex-1 py-2 px-3 bg-secondary text-white rounded-lg text-sm hover:bg-secondary-dark transition-colors"
+                                >
+                                    Add Action
+                                </button>
+                                <button 
+                                    onClick={handleToggleStatus}
+                                    className="flex-1 py-2 px-3 bg-neutral-dark text-primary-dark rounded-lg text-sm hover:bg-neutral-darkest hover:text-white transition-colors"
+                                >
+                                    {thread.status === 'open' ? 'Close Thread' : 'Reopen Thread'}
+                                </button>
+                            </div>
+                            
+                            {showUpdateForm && (
+                                <form onSubmit={handleAddUpdate} className="animate-fade-in">
+                                    <textarea
+                                        value={newUpdate}
+                                        onChange={(e) => setNewUpdate(e.target.value)}
+                                        placeholder="What's the latest update?"
+                                        className="w-full p-3 border border-neutral-dark rounded-lg focus:outline-none focus:ring-1 focus:ring-primary"
+                                        rows="2"
+                                    />
+                                    <div className="flex justify-end mt-2">
+                                        <button 
+                                            type="button" 
+                                            onClick={() => setShowUpdateForm(false)}
+                                            className="px-3 py-1 mr-2 text-sm text-neutral-darkest hover:text-primary-dark"
+                                        >
+                                            Cancel
+                                        </button>
+                                        <button 
+                                            type="submit" 
+                                            className="px-3 py-1 bg-primary text-white rounded text-sm hover:bg-primary-dark"
+                                        >
+                                            Save Update
+                                        </button>
+                                    </div>
+                                </form>
+                            )}
+                            
+                            {showActionForm && (
+                                <form onSubmit={handleAddAction} className="animate-fade-in">
+                                    <input
+                                        type="text"
+                                        value={newAction}
+                                        onChange={(e) => setNewAction(e.target.value)}
+                                        placeholder="What's the next action?"
+                                        className="w-full p-3 border border-neutral-dark rounded-lg focus:outline-none focus:ring-1 focus:ring-primary"
+                                    />
+                                    <div className="flex justify-end mt-2">
+                                        <button 
+                                            type="button" 
+                                            onClick={() => setShowActionForm(false)}
+                                            className="px-3 py-1 mr-2 text-sm text-neutral-darkest hover:text-primary-dark"
+                                        >
+                                            Cancel
+                                        </button>
+                                        <button 
+                                            type="submit" 
+                                            className="px-3 py-1 bg-secondary text-white rounded text-sm hover:bg-secondary-dark"
+                                        >
+                                            Create Action
+                                        </button>
+                                    </div>
+                                </form>
+                            )}
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        // Daily Actions Page
+        function DailyActionsPage() {
+            const [actions, setActions] = React.useState([]);
+            const [topics, setTopics] = React.useState({});
+            const [threads, setThreads] = React.useState({});
+            const [loading, setLoading] = React.useState(true);
+            const [streak, setStreak] = React.useState(0);
+            const { showToast } = useToast();
+
+            const loadActions = async () => {
+                try {
+                    setLoading(true);
+                    
+                    // Get today's date (start and end)
+                    const today = new Date();
+                    today.setHours(0, 0, 0, 0);
+                    const tomorrow = new Date(today);
+                    tomorrow.setDate(tomorrow.getDate() + 1);
+                    
+                    // Fetch pending actions for today
+                    const todayActions = await db.actions
+                        .where('status')
+                        .equals('pending')
+                        .and(action => {
+                            const actionDate = new Date(action.dueDate);
+                            actionDate.setHours(0, 0, 0, 0);
+                            return actionDate <= today;
+                        })
+                        .toArray();
+                    
+                    // Load all topics
+                    const allTopics = await db.topics.toArray();
+                    const topicsMap = {};
+                    allTopics.forEach(topic => {
+                        topicsMap[topic.id] = topic;
+                    });
+                    
+                    // Load all threads
+                    const allThreads = await db.threads.toArray();
+                    const threadsMap = {};
+                    allThreads.forEach(thread => {
+                        threadsMap[thread.id] = thread;
+                    });
+                    
+                    setActions(todayActions);
+                    setTopics(topicsMap);
+                    setThreads(threadsMap);
+                    
+                    // Calculate streak
+                    const lastWeek = new Date(today);
+                    lastWeek.setDate(lastWeek.getDate() - 7);
+                    
+                    const completedActions = await db.actions
+                        .where('status')
+                        .equals('done')
+                        .and(action => new Date(action.dueDate) >= lastWeek)
+                        .toArray();
+                    
+                    // Group by day
+                    const completedByDay = {};
+                    completedActions.forEach(action => {
+                        const date = new Date(action.dueDate);
+                        const dateString = date.toDateString();
+                        if (!completedByDay[dateString]) {
+                            completedByDay[dateString] = 0;
+                        }
+                        completedByDay[dateString]++;
+                    });
+                    
+                    // Calculate current streak
+                    let currentStreak = 0;
+                    for (let i = 0; i < 7; i++) {
+                        const checkDate = new Date(today);
+                        checkDate.setDate(checkDate.getDate() - i);
+                        const checkDateString = checkDate.toDateString();
+                        
+                        if (completedByDay[checkDateString] && completedByDay[checkDateString] > 0) {
+                            currentStreak++;
+                        } else if (i > 0) { // Allow today to not have completed tasks yet
+                            break;
+                        }
+                    }
+                    
+                    setStreak(currentStreak);
+                } catch (error) {
+                    console.error('Error loading actions:', error);
+                    showToast('Failed to load actions', 'error');
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            React.useEffect(() => {
+                loadActions();
+            }, []);
+
+            return (
+                <div className="p-4 animate-fade-in">
+                    <div className="flex justify-between items-center mb-4">
+                        <h1 className="text-2xl font-bold text-primary-dark">Today's Actions</h1>
+                        <div className="flex items-center bg-primary bg-opacity-10 px-3 py-1 rounded-full">
+                            <span className="text-primary-dark mr-1">🔥</span>
+                            <span className="text-primary-dark font-medium">{streak} day streak</span>
+                        </div>
+                    </div>
+                    
+                    {loading ? (
+                        <div className="flex justify-center items-center h-64">
+                            <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-primary"></div>
+                        </div>
+                    ) : actions.length > 0 ? (
+                        <div>
+                            {actions.map(action => (
+                                <ActionCard 
+                                    key={action.id} 
+                                    action={action} 
+                                    onActionUpdate={loadActions}
+                                    topicName={action.topicId ? topics[action.topicId]?.name : null}
+                                    threadTitle={action.threadId ? threads[action.threadId]?.title : null}
+                                />
+                            ))}
+                        </div>
+                    ) : (
+                        <div className="text-center py-12 bg-neutral-lightest rounded-lg">
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-16 w-16 mx-auto text-neutral-dark" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                            <h3 className="mt-4 text-lg font-medium text-primary-dark">All caught up!</h3>
+                            <p className="mt-2 text-neutral-darkest">You have no pending actions for today.</p>
+                        </div>
+                    )}
+                    
+                    <button 
+                        onClick={() => loadActions()}
+                        className="fixed bottom-20 right-4 bg-primary text-white rounded-full p-3 shadow-lg"
+                    >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                        </svg>
+                    </button>
+                </div>
+            );
+        }
+
+        // Threads and Topics Page
+        function ThreadsPage() {
+            const [topics, setTopics] = React.useState([]);
+            const [threads, setThreads] = React.useState([]);
+            const [updates, setUpdates] = React.useState({});
+            const [actions, setActions] = React.useState({});
+            const [loading, setLoading] = React.useState(true);
+            const [selectedTopic, setSelectedTopic] = React.useState(null);
+            const [showNewTopicForm, setShowNewTopicForm] = React.useState(false);
+            const [showNewThreadForm, setShowNewThreadForm] = React.useState(false);
+            const [newTopicName, setNewTopicName] = React.useState('');
+            const [newThreadData, setNewThreadData] = React.useState({ title: '', topicId: null });
+            const { showToast } = useToast();
+
+            const loadData = async () => {
+                try {
+                    setLoading(true);
+                    
+                    // Load topics
+                    const allTopics = await db.topics.toArray();
+                    setTopics(allTopics);
+                    
+                    // Set default selected topic if none is selected
+                    if (!selectedTopic && allTopics.length > 0) {
+                        setSelectedTopic(allTopics[0].id);
+                    }
+                    
+                    // Load threads for selected topic or all threads if no topic selected
+                    let threadQuery = db.threads;
+                    if (selectedTopic) {
+                        threadQuery = threadQuery.where('topicId').equals(selectedTopic);
+                    }
+                    const allThreads = await threadQuery.toArray();
+                    setThreads(allThreads);
+                    
+                    // Load latest update for each thread
+                    const threadIds = allThreads.map(thread => thread.id);
+                    const latestUpdates = {};
+                    
+                    for (const threadId of threadIds) {
+                        const update = await db.updates
+                            .where('threadId')
+                            .equals(threadId)
+                            .reverse()
+                            .sortBy('timestamp');
+                        
+                        if (update && update.length > 0) {
+                            latestUpdates[threadId] = update[0];
+                        }
+                    }
+                    
+                    setUpdates(latestUpdates);
+                    
+                    // Load next action for each thread
+                    const nextActions = {};
+                    
+                    for (const threadId of threadIds) {
+                        const action = await db.actions
+                            .where('threadId')
+                            .equals(threadId)
+                            .and(action => action.status === 'pending')
+                            .first();
+                        
+                        if (action) {
+                            nextActions[threadId] = action;
+                        }
+                    }
+                    
+                    setActions(nextActions);
+                } catch (error) {
+                    console.error('Error loading data:', error);
+                    showToast('Failed to load data', 'error');
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            React.useEffect(() => {
+                loadData();
+            }, [selectedTopic]);
+
+            const handleAddTopic = async (e) => {
+                e.preventDefault();
+                if (!newTopicName.trim()) return;
+                
+                try {
+                    const id = await db.topics.add({
+                        name: newTopicName,
+                        createdAt: new Date()
+                    });
+                    
+                    setNewTopicName('');
+                    setShowNewTopicForm(false);
+                    setSelectedTopic(id);
+                    showToast('Topic added successfully', 'success');
+                    await loadData();
+                } catch (error) {
+                    console.error('Error adding topic:', error);
+                    showToast('Failed to add topic', 'error');
+                }
+            };
+
+            const handleAddThread = async (e) => {
+                e.preventDefault();
+                if (!newThreadData.title.trim() || !newThreadData.topicId) return;
+                
+                try {
+                    await db.threads.add({
+                        topicId: newThreadData.topicId,
+                        title: newThreadData.title,
+                        status: 'open',
+                        progress: 0,
+                        createdAt: new Date()
+                    });
+                    
+                    setNewThreadData({ title: '', topicId: selectedTopic });
+                    setShowNewThreadForm(false);
+                    showToast('Thread added successfully', 'success');
+                    await loadData();
+                } catch (error) {
+                    console.error('Error adding thread:', error);
+                    showToast('Failed to add thread', 'error');
+                }
+            };
+
+            return (
+                <div className="p-4 animate-fade-in">
+                    <div className="flex justify-between items-center mb-4">
+                        <h1 className="text-2xl font-bold text-primary-dark">Threads & Topics</h1>
+                        <div className="flex space-x-2">
+                            <button 
+                                onClick={() => {
+                                    setShowNewTopicForm(!showNewTopicForm);
+                                    setShowNewThreadForm(false);
+                                }}
+                                className="bg-primary text-white px-3 py-1 rounded-lg text-sm hover:bg-primary-dark transition-colors"
+                            >
+                                New Topic
+                            </button>
+                            <button 
+                                onClick={() => {
+                                    setShowNewThreadForm(!showNewThreadForm);
+                                    setShowNewTopicForm(false);
+                                    setNewThreadData({ ...newThreadData, topicId: selectedTopic });
+                                }}
+                                className="bg-secondary text-white px-3 py-1 rounded-lg text-sm hover:bg-secondary-dark transition-colors"
+                                disabled={!topics.length}
+                            >
+                                New Thread
+                            </button>
+                        </div>
+                    </div>
+                    
+                    {showNewTopicForm && (
+                        <form onSubmit={handleAddTopic} className="mb-4 bg-white p-4 rounded-lg shadow-md animate-fade-in">
+                            <h3 className="font-medium text-primary-dark mb-2">Add New Topic</h3>
+                            <input
+                                type="text"
+                                value={newTopicName}
+                                onChange={(e) => setNewTopicName(e.target.value)}
+                                placeholder="Topic name"
+                                className="w-full p-2 border border-neutral-dark rounded-lg focus:outline-none focus:ring-1 focus:ring-primary mb-2"
+                            />
+                            <div className="flex justify-end">
+                                <button 
+                                    type="button" 
+                                    onClick={() => setShowNewTopicForm(false)}
+                                    className="px-3 py-1 mr-2 text-sm text-neutral-darkest hover:text-primary-dark"
+                                >
+                                    Cancel
+                                </button>
+                                <button 
+                                    type="submit" 
+                                    className="px-3 py-1 bg-primary text-white rounded text-sm hover:bg-primary-dark"
+                                >
+                                    Create Topic
+                                </button>
+                            </div>
+                        </form>
+                    )}
+                    
+                    {showNewThreadForm && (
+                        <form onSubmit={handleAddThread} className="mb-4 bg-white p-4 rounded-lg shadow-md animate-fade-in">
+                            <h3 className="font-medium text-primary-dark mb-2">Add New Thread</h3>
+                            <input
+                                type="text"
+                                value={newThreadData.title}
+                                onChange={(e) => setNewThreadData({ ...newThreadData, title: e.target.value })}
+                                placeholder="Thread title"
+                                className="w-full p-2 border border-neutral-dark rounded-lg focus:outline-none focus:ring-1 focus:ring-primary mb-2"
+                            />
+                            <select
+                                value={newThreadData.topicId || ''}
+                                onChange={(e) => setNewThreadData({ ...newThreadData, topicId: parseInt(e.target.value) })}
+                                className="w-full p-2 border border-neutral-dark rounded-lg focus:outline-none focus:ring-1 focus:ring-primary mb-2"
+                            >
+                                <option value="">Select a topic</option>
+                                {topics.map(topic => (
+                                    <option key={topic.id} value={topic.id}>{topic.name}</option>
+                                ))}
+                            </select>
+                            <div className="flex justify-end">
+                                <button 
+                                    type="button" 
+                                    onClick={() => setShowNewThreadForm(false)}
+                                    className="px-3 py-1 mr-2 text-sm text-neutral-darkest hover:text-primary-dark"
+                                >
+                                    Cancel
+                                </button>
+                                <button 
+                                    type="submit" 
+                                    className="px-3 py-1 bg-secondary text-white rounded text-sm hover:bg-secondary-dark"
+                                >
+                                    Create Thread
+                                </button>
+                            </div>
+                        </form>
+                    )}
+                    
+                    <div className="mb-4 overflow-x-auto">
+                        <div className="flex space-x-2 pb-2">
+                            <button 
+                                onClick={() => setSelectedTopic(null)}
+                                className={`px-3 py-1 rounded-full text-sm whitespace-nowrap 
+                                    ${selectedTopic === null 
+                                        ? 'bg-primary text-white' 
+                                        : 'bg-neutral-light text-primary-dark hover:bg-neutral-dark transition-colors'}`}
+                            >
+                                All Topics
+                            </button>
+                            {topics.map(topic => (
+                                <button 
+                                    key={topic.id}
+                                    onClick={() => setSelectedTopic(topic.id)}
+                                    className={`px-3 py-1 rounded-full text-sm whitespace-nowrap 
+                                        ${selectedTopic === topic.id 
+                                            ? 'bg-primary text-white' 
+                                            : 'bg-neutral-light text-primary-dark hover:bg-neutral-dark transition-colors'}`}
+                                >
+                                    {topic.name}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                    
+                    {loading ? (
+                        <div className="flex justify-center items-center h-64">
+                            <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-primary"></div>
+                        </div>
+                    ) : threads.length > 0 ? (
+                        <div>
+                            {threads.map(thread => {
+                                const topic = topics.find(t => t.id === thread.topicId);
+                                return (
+                                    <ThreadCard 
+                                        key={thread.id}
+                                        thread={thread}
+                                        topic={topic}
+                                        latestUpdate={updates[thread.id]}
+                                        nextAction={actions[thread.id]}
+                                        onActionUpdate={loadData}
+                                        onThreadUpdate={loadData}
+                                    />
+                                );
+                            })}
+                        </div>
+                    ) : (
+                        <div className="text-center py-12 bg-neutral-lightest rounded-lg">
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-16 w-16 mx-auto text-neutral-dark" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                            </svg>
+                            <h3 className="mt-4 text-lg font-medium text-primary-dark">No threads found</h3>
+                            <p className="mt-2 text-neutral-darkest">
+                                {selectedTopic 
+                                    ? "This topic doesn't have any threads yet." 
+                                    : "You haven't created any threads yet."}
+                            </p>
+                            <button 
+                                onClick={() => {
+                                    setShowNewThreadForm(true);
+                                    setNewThreadData({ ...newThreadData, topicId: selectedTopic });
+                                }}
+                                className="mt-4 bg-secondary text-white px-4 py-2 rounded-lg text-sm hover:bg-secondary-dark transition-colors"
+                                disabled={!topics.length}
+                            >
+                                Create Your First Thread
+                            </button>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        // Action Generators Page
+        function ActionGeneratorsPage() {
+            const [generators, setGenerators] = React.useState([]);
+            const [topics, setTopics] = React.useState([]);
+            const [loading, setLoading] = React.useState(true);
+            const [showNewForm, setShowNewForm] = React.useState(false);
+            const [formData, setFormData] = React.useState({
+                title: '',
+                interval: 'daily',
+                startDate: new Date().toISOString().split('T')[0],
+                endDate: '',
+                topicId: ''
+            });
+            const { showToast } = useToast();
+
+            const loadData = async () => {
+                try {
+                    setLoading(true);
+                    
+                    // Load action generators
+                    const allGenerators = await db.actionGenerators.toArray();
+                    
+                    // Load topics
+                    const allTopics = await db.topics.toArray();
+                    
+                    setGenerators(allGenerators);
+                    setTopics(allTopics);
+                } catch (error) {
+                    console.error('Error loading action generators:', error);
+                    showToast('Failed to load action generators', 'error');
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            React.useEffect(() => {
+                loadData();
+            }, []);
+
+            const handleInputChange = (e) => {
+                const { name, value } = e.target;
+                setFormData({
+                    ...formData,
+                    [name]: value
+                });
+            };
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                
+                if (!formData.title.trim() || !formData.topicId) {
+                    showToast('Please fill in all required fields', 'error');
+                    return;
+                }
+                
+                try {
+                    await db.actionGenerators.add({
+                        title: formData.title,
+                        interval: formData.interval,
+                        startDate: new Date(formData.startDate),
+                        endDate: formData.endDate ? new Date(formData.endDate) : null,
+                        topicId: parseInt(formData.topicId),
+                        createdAt: new Date(),
+                        lastGenerated: null
+                    });
+                    
+                    setFormData({
+                        title: '',
+                        interval: 'daily',
+                        startDate: new Date().toISOString().split('T')[0],
+                        endDate: '',
+                        topicId: ''
+                    });
+                    
+                    setShowNewForm(false);
+                    showToast('Action generator created successfully', 'success');
+                    await loadData();
+                } catch (error) {
+                    console.error('Error creating action generator:', error);
+                    showToast('Failed to create action generator', 'error');
+                }
+            };
+
+            const generateNextDayActions = async () => {
+                try {
+                    const today = new Date();
+                    today.setHours(0, 0, 0, 0);
+                    
+                    const tomorrow = new Date(today);
+                    tomorrow.setDate(tomorrow.getDate() + 1);
+                    
+                    let actionsCreated = 0;
+                    
+                    for (const generator of generators) {
+                        const startDate = new Date(generator.startDate);
+                        startDate.setHours(0, 0, 0, 0);
+                        
+                        // Skip if start date is in the future
+                        if (startDate > tomorrow) {
+                            continue;
+                        }
+                        
+                        // Skip if end date is in the past
+                        if (generator.endDate) {
+                            const endDate = new Date(generator.endDate);
+                            endDate.setHours(0, 0, 0, 0);
+                            
+                            if (endDate < tomorrow) {
+                                continue;
+                            }
+                        }
+                        
+                        // Check if this generator should create an action for tomorrow
+                        let shouldCreate = false;
+                        
+                        if (generator.interval === 'daily') {
+                            shouldCreate = true;
+                        } else if (generator.interval === 'weekly') {
+                            // If tomorrow's day of week matches the day of week of the start date
+                            shouldCreate = tomorrow.getDay() === startDate.getDay();
+                        } else if (generator.interval === 'monthly') {
+                            // If tomorrow's day of month matches the day of month of the start date
+                            shouldCreate = tomorrow.getDate() === startDate.getDate();
+                        } else if (generator.interval === 'weekdays') {
+                            // If tomorrow is a weekday (1-5 is Monday-Friday)
+                            const day = tomorrow.getDay();
+                            shouldCreate = day >= 1 && day <= 5;
+                        } else if (generator.interval === 'weekends') {
+                            // If tomorrow is a weekend (0 is Sunday, 6 is Saturday)
+                            const day = tomorrow.getDay();
+                            shouldCreate = day === 0 || day === 6;
+                        }
+                        
+                        if (shouldCreate) {
+                            // Check if action already exists for tomorrow
+                            const existingAction = await db.actions
+                                .where('title')
+                                .equals(generator.title)
+                                .and(action => {
+                                    const actionDate = new Date(action.dueDate);
+                                    actionDate.setHours(0, 0, 0, 0);
+                                    return actionDate.getTime() === tomorrow.getTime();
+                                })
+                                .count();
+                            
+                            if (existingAction === 0) {
+                                await db.actions.add({
+                                    title: generator.title,
+                                    status: 'pending',
+                                    dueDate: new Date(tomorrow),
+                                    threadId: null,
+                                    topicId: generator.topicId,
+                                    assignedTo: null,
+                                    createdAt: new Date()
+                                });
+                                
+                                actionsCreated++;
+                            }
+                        }
+                        
+                        // Update last generated date
+                        await db.actionGenerators.update(generator.id, {
+                            lastGenerated: new Date()
+                        });
+                    }
+                    
+                    showToast(`Generated ${actionsCreated} actions for tomorrow`, 'success');
+                    await loadData();
+                } catch (error) {
+                    console.error('Error generating actions:', error);
+                    showToast('Failed to generate actions', 'error');
+                }
+            };
+
+            const deleteGenerator = async (id) => {
+                if (confirm('Are you sure you want to delete this action generator?')) {
+                    try {
+                        await db.actionGenerators.delete(id);
+                        showToast('Action generator deleted', 'success');
+                        await loadData();
+                    } catch (error) {
+                        console.error('Error deleting generator:', error);
+                        showToast('Failed to delete generator', 'error');
+                    }
+                }
+            };
+
+            return (
+                <div className="p-4 animate-fade-in">
+                    <div className="flex justify-between items-center mb-4">
+                        <h1 className="text-2xl font-bold text-primary-dark">Action Generators</h1>
+                        <button 
+                            onClick={() => setShowNewForm(!showNewForm)}
+                            className="bg-primary text-white px-3 py-1 rounded-lg text-sm hover:bg-primary-dark transition-colors"
+                        >
+                            New Generator
+                        </button>
+                    </div>
+                    
+                    {showNewForm && (
+                        <form onSubmit={handleSubmit} className="mb-6 bg-white p-4 rounded-lg shadow-md animate-fade-in">
+                            <h3 className="font-medium text-primary-dark mb-3">Create Action Generator</h3>
+                            
+                            <div className="mb-3">
+                                <label className="block text-sm text-neutral-darkest mb-1">Title</label>
+                                <input
+                                    type="text"
+                                    name="title"
+                                    value={formData.title}
+                                    onChange={handleInputChange}
+                                    placeholder="Action title"
+                                    className="w-full p-2 border border-neutral-dark rounded-lg focus:outline-none focus:ring-1 focus:ring-primary"
+                                    required
+                                />
+                            </div>
+                            
+                            <div className="mb-3">
+                                <label className="block text-sm text-neutral-darkest mb-1">Interval</label>
+                                <select
+                                    name="interval"
+                                    value={formData.interval}
+                                    onChange={handleInputChange}
+                                    className="w-full p-2 border border-neutral-dark rounded-lg focus:outline-none focus:ring-1 focus:ring-primary"
+                                >
+                                    <option value="daily">Daily</option>
+                                    <option value="weekly">Weekly</option>
+                                    <option value="monthly">Monthly</option>
+                                    <option value="weekdays">Weekdays only</option>
+                                    <option value="weekends">Weekends only</option>
+                                </select>
+                            </div>
+                            
+                            <div className="mb-3">
+                                <label className="block text-sm text-neutral-darkest mb-1">Start Date</label>
+                                <input
+                                    type="date"
+                                    name="startDate"
+                                    value={formData.startDate}
+                                    onChange={handleInputChange}
+                                    className="w-full p-2 border border-neutral-dark rounded-lg focus:outline-none focus:ring-1 focus:ring-primary"
+                                    required
+                                />
+                            </div>
+                            
+                            <div className="mb-3">
+                                <label className="block text-sm text-neutral-darkest mb-1">End Date (Optional)</label>
+                                <input
+                                    type="date"
+                                    name="endDate"
+                                    value={formData.endDate}
+                                    onChange={handleInputChange}
+                                    className="w-full p-2 border border-neutral-dark rounded-lg focus:outline-none focus:ring-1 focus:ring-primary"
+                                />
+                            </div>
+                            
+                            <div className="mb-4">
+                                <label className="block text-sm text-neutral-darkest mb-1">Topic</label>
+                                <select
+                                    name="topicId"
+                                    value={formData.topicId}
+                                    onChange={handleInputChange}
+                                    className="w-full p-2 border border-neutral-dark rounded-lg focus:outline-none focus:ring-1 focus:ring-primary"
+                                    required
+                                >
+                                    <option value="">Select a topic</option>
+                                    {topics.map(topic => (
+                                        <option key={topic.id} value={topic.id}>{topic.name}</option>
+                                    ))}
+                                </select>
+                            </div>
+                            
+                            <div className="flex justify-end">
+                                <button 
+                                    type="button" 
+                                    onClick={() => setShowNewForm(false)}
+                                    className="px-3 py-1 mr-2 text-sm text-neutral-darkest hover:text-primary-dark"
+                                >
+                                    Cancel
+                                </button>
+                                <button 
+                                    type="submit" 
+                                    className="px-3 py-1 bg-primary text-white rounded text-sm hover:bg-primary-dark"
+                                >
+                                    Create Generator
+                                </button>
+                            </div>
+                        </form>
+                    )}
+                    
+                    <div className="mb-6">
+                        <button 
+                            onClick={generateNextDayActions}
+                            className="w-full py-3 bg-secondary text-white rounded-lg font-medium hover:bg-secondary-dark transition-colors"
+                        >
+                            Generate Tomorrow's Actions
+                        </button>
+                    </div>
+                    
+                    {loading ? (
+                        <div className="flex justify-center items-center h-64">
+                            <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-primary"></div>
+                        </div>
+                    ) : generators.length > 0 ? (
+                        <div className="space-y-3">
+                            {generators.map(generator => {
+                                const topic = topics.find(t => t.id === generator.topicId);
+                                return (
+                                    <div key={generator.id} className="bg-white rounded-lg shadow-md p-4 animate-fade-in">
+                                        <div className="flex justify-between items-start">
+                                            <div>
+                                                <h3 className="font-medium text-primary-dark">{generator.title}</h3>
+                                                <div className="text-xs text-neutral-darkest mt-1">
+                                                    <span className="capitalize">{generator.interval}</span>
+                                                    {topic && <span> • {topic.name}</span>}
+                                                </div>
+                                            </div>
+                                            <button 
+                                                onClick={() => deleteGenerator(generator.id)}
+                                                className="text-red-500 hover:text-red-700"
+                                            >
+                                                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                                    <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
+                                                </svg>
+                                            </button>
+                                        </div>
+                                        
+                                        <div className="mt-3 text-xs text-neutral-darkest">
+                                            <div>Start: {formatDate(generator.startDate)}</div>
+                                            {generator.endDate && <div>End: {formatDate(generator.endDate)}</div>}
+                                            {generator.lastGenerated && (
+                                                <div className="mt-1">Last generated: {formatDate(generator.lastGenerated)}</div>
+                                            )}
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    ) : (
+                        <div className="text-center py-12 bg-neutral-lightest rounded-lg">
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-16 w-16 mx-auto text-neutral-dark" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                            <h3 className="mt-4 text-lg font-medium text-primary-dark">No action generators</h3>
+                            <p className="mt-2 text-neutral-darkest">Create generators to automatically schedule recurring actions.</p>
+                            <button 
+                                onClick={() => setShowNewForm(true)}
+                                className="mt-4 bg-primary text-white px-4 py-2 rounded-lg text-sm hover:bg-primary-dark transition-colors"
+                            >
+                                Create Your First Generator
+                            </button>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        // Reports Page
+        function ReportsPage() {
+            const [timeRange, setTimeRange] = React.useState('daily');
+            const [stats, setStats] = React.useState({
+                actionsCompleted: 0,
+                actionsDelayed: 0,
+                actionsDiscarded: 0,
+                threadsCreated: 0,
+                updatesAdded: 0,
+                completionRate: 0
+            });
+            const [recentUpdates, setRecentUpdates] = React.useState([]);
+            const [loading, setLoading] = React.useState(true);
+            const { showToast } = useToast();
+
+            const loadData = async () => {
+                try {
+                    setLoading(true);
+                    
+                    // Calculate date range based on selected timeRange
+                    const now = new Date();
+                    let startDate;
+                    
+                    switch (timeRange) {
+                        case 'daily':
+                            startDate = new Date(now);
+                            startDate.setHours(0, 0, 0, 0);
+                            break;
+                        case 'weekly':
+                            startDate = new Date(now);
+                            startDate.setDate(now.getDate() - 7);
+                            break;
+                        case 'monthly':
+                            startDate = new Date(now);
+                            startDate.setMonth(now.getMonth() - 1);
+                            break;
+                        case 'yearly':
+                            startDate = new Date(now);
+                            startDate.setFullYear(now.getFullYear() - 1);
+                            break;
+                        default:
+                            startDate = new Date(now);
+                            startDate.setHours(0, 0, 0, 0);
+                    }
+                    
+                    // Get actions stats
+                    const allActions = await db.actions
+                        .where('createdAt')
+                        .aboveOrEqual(startDate)
+                        .toArray();
+                    
+                    const actionsCompleted = allActions.filter(a => a.status === 'done').length;
+                    const actionsDelayed = allActions.filter(a => a.status === 'delayed').length;
+                    const actionsDiscarded = allActions.filter(a => a.status === 'discarded').length;
+                    const totalActionsWithStatus = allActions.filter(a => a.status !== 'pending').length;
+                    const completionRate = totalActionsWithStatus > 0 
+                        ? Math.round((actionsCompleted / totalActionsWithStatus) * 100) 
+                        : 0;
+                    
+                    // Get threads created
+                    const threadsCreated = await db.threads
+                        .where('createdAt')
+                        .aboveOrEqual(startDate)
+                        .count();
+                    
+                    // Get updates added
+                    const updatesAdded = await db.updates
+                        .where('timestamp')
+                        .aboveOrEqual(startDate)
+                        .count();
+                    
+                    // Get recent updates with thread and topic info
+                    const updates = await db.updates
+                        .where('timestamp')
+                        .aboveOrEqual(startDate)
+                        .reverse()
+                        .sortBy('timestamp');
+                    
+                    const updatesWithDetails = [];
+                    for (const update of updates.slice(0, 10)) { // Get top 10 recent updates
+                        const thread = await db.threads.get(update.threadId);
+                        let topic = null;
+                        if (thread && thread.topicId) {
+                            topic = await db.topics.get(thread.topicId);
+                        }
+                        
+                        updatesWithDetails.push({
+                            ...update,
+                            thread,
+                            topic
+                        });
+                    }
+                    
+                    setStats({
+                        actionsCompleted,
+                        actionsDelayed,
+                        actionsDiscarded,
+                        threadsCreated,
+                        updatesAdded,
+                        completionRate
+                    });
+                    
+                    setRecentUpdates(updatesWithDetails);
+                } catch (error) {
+                    console.error('Error loading report data:', error);
+                    showToast('Failed to load report data', 'error');
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            React.useEffect(() => {
+                loadData();
+            }, [timeRange]);
+
+            return (
+                <div className="p-4 animate-fade-in">
+                    <div className="flex justify-between items-center mb-4">
+                        <h1 className="text-2xl font-bold text-primary-dark">Reports & Insights</h1>
+                        <select
+                            value={timeRange}
+                            onChange={(e) => setTimeRange(e.target.value)}
+                            className="bg-neutral-light text-primary-dark px-3 py-1 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                        >
+                            <option value="daily">Today</option>
+                            <option value="weekly">This Week</option>
+                            <option value="monthly">This Month</option>
+                            <option value="yearly">This Year</option>
+                        </select>
+                    </div>
+                    
+                    {loading ? (
+                        <div className="flex justify-center items-center h-64">
+                            <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-primary"></div>
+                        </div>
+                    ) : (
+                        <>
+                            <div className="grid grid-cols-2 gap-3 mb-6">
+                                <div className="bg-white rounded-lg shadow-md p-4 text-center">
+                                    <div className="text-3xl font-bold text-green-500">{stats.actionsCompleted}</div>
+                                    <div className="text-sm text-neutral-darkest">Actions Completed</div>
+                                </div>
+                                <div className="bg-white rounded-lg shadow-md p-4 text-center">
+                                    <div className="text-3xl font-bold text-primary">{stats.completionRate}%</div>
+                                    <div className="text-sm text-neutral-darkest">Completion Rate</div>
+                                </div>
+                                <div className="bg-white rounded-lg shadow-md p-4 text-center">
+                                    <div className="text-3xl font-bold text-secondary">{stats.threadsCreated}</div>
+                                    <div className="text-sm text-neutral-darkest">Threads Created</div>
+                                </div>
+                                <div className="bg-white rounded-lg shadow-md p-4 text-center">
+                                    <div className="text-3xl font-bold text-blue-500">{stats.updatesAdded}</div>
+                                    <div className="text-sm text-neutral-darkest">Updates Added</div>
+                                </div>
+                            </div>
+                            
+                            <h2 className="text-xl font-semibold text-primary-dark mb-3">Action Status Breakdown</h2>
+                            <div className="bg-white rounded-lg shadow-md p-4 mb-6">
+                                <div className="flex h-4 mb-2">
+                                    <div 
+                                        className="bg-green-500 h-full rounded-l" 
+                                        style={{ 
+                                            width: `${stats.actionsCompleted + stats.actionsDelayed + stats.actionsDiscarded === 0 ? 0 : 
+                                                Math.round((stats.actionsCompleted / (stats.actionsCompleted + stats.actionsDelayed + stats.actionsDiscarded)) * 100)}%` 
+                                        }}
+                                    ></div>
+                                    <div 
+                                        className="bg-yellow-500 h-full" 
+                                        style={{ 
+                                            width: `${stats.actionsCompleted + stats.actionsDelayed + stats.actionsDiscarded === 0 ? 0 : 
+                                                Math.round((stats.actionsDelayed / (stats.actionsCompleted + stats.actionsDelayed + stats.actionsDiscarded)) * 100)}%` 
+                                        }}
+                                    ></div>
+                                    <div 
+                                        className="bg-red-500 h-full rounded-r" 
+                                        style={{ 
+                                            width: `${stats.actionsCompleted + stats.actionsDelayed + stats.actionsDiscarded === 0 ? 0 : 
+                                                Math.round((stats.actionsDiscarded / (stats.actionsCompleted + stats.actionsDelayed + stats.actionsDiscarded)) * 100)}%` 
+                                        }}
+                                    ></div>
+                                </div>
+                                <div className="flex text-xs justify-between">
+                                    <div className="flex items-center">
+                                        <div className="w-3 h-3 bg-green-500 rounded-full mr-1"></div>
+                                        <span>Completed: {stats.actionsCompleted}</span>
+                                    </div>
+                                    <div className="flex items-center">
+                                        <div className="w-3 h-3 bg-yellow-500 rounded-full mr-1"></div>
+                                        <span>Delayed: {stats.actionsDelayed}</span>
+                                    </div>
+                                    <div className="flex items-center">
+                                        <div className="w-3 h-3 bg-red-500 rounded-full mr-1"></div>
+                                        <span>Discarded: {stats.actionsDiscarded}</span>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <h2 className="text-xl font-semibold text-primary-dark mb-3">Recent Updates</h2>
+                            {recentUpdates.length > 0 ? (
+                                <div className="bg-white rounded-lg shadow-md p-4">
+                                    {recentUpdates.map(update => (
+                                        <div key={update.id} className="mb-4 pb-4 border-b border-neutral-light last:border-b-0 last:mb-0 last:pb-0">
+                                            <div className="text-sm">{update.content}</div>
+                                            <div className="flex justify-between items-center mt-1">
+                                                <div className="text-xs text-neutral-darkest">
+                                                    {update.thread && <span className="font-medium">{update.thread.title}</span>}
+                                                    {update.topic && <span> • {update.topic.name}</span>}
+                                                </div>
+                                                <div className="text-xs text-neutral-darkest">{formatDate(update.timestamp)}</div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            ) : (
+                                <div className="text-center py-8 bg-neutral-lightest rounded-lg">
+                                    <p className="text-neutral-darkest">No updates found for this time period.</p>
+                                </div>
+                            )}
+                        </>
+                    )}
+                </div>
+            );
+        }
+
+        // Main App
+        function App() {
+            const [activeTab, setActiveTab] = React.useState('actions');
+            const { user, loading } = useAuth();
+
+            // Initialize database when app loads
+            React.useEffect(() => {
+                initializeDatabase();
+            }, []);
+
+            if (loading) {
+                return (
+                    <div className="min-h-screen flex justify-center items-center">
+                        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-primary"></div>
+                    </div>
+                );
+            }
+
+            if (!user) {
+                return <LoginPage />;
+            }
+
+            const renderContent = () => {
+                switch (activeTab) {
+                    case 'actions':
+                        return <DailyActionsPage />;
+                    case 'threads':
+                        return <ThreadsPage />;
+                    case 'generators':
+                        return <ActionGeneratorsPage />;
+                    case 'reports':
+                        return <ReportsPage />;
+                    default:
+                        return <DailyActionsPage />;
+                }
+            };
+
+            return (
+                <div className="min-h-screen bg-neutral-lightest pb-16">
+                    {/* Header */}
+                    <header className="bg-primary text-white p-4 shadow-md">
+                        <div className="flex justify-between items-center">
+                            <h1 className="text-xl font-bold">Mental Thread Tracker</h1>
+                            <div className="flex items-center">
+                                <span className="mr-2 text-sm">{user.name}</span>
+                                <button 
+                                    onClick={() => logout()}
+                                    className="text-white opacity-80 hover:opacity-100"
+                                >
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                        <path fillRule="evenodd" d="M3 3a1 1 0 00-1 1v12a1 1 0 001 1h12a1 1 0 001-1V4a1 1 0 00-1-1H3zm7 4a1 1 0 10-2 0v4a1 1 0 102 0V7zm1 4a1 1 0 102 0V7a1 1 0 10-2 0v4z" clipRule="evenodd" />
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+                    </header>
+                    
+                    {/* Content */}
+                    <main>
+                        {renderContent()}
+                    </main>
+                    
+                    {/* Bottom Navigation */}
+                    <nav className="fixed bottom-0 left-0 right-0 bg-white shadow-lg border-t border-neutral-light">
+                        <div className="flex justify-around">
+                            <button 
+                                onClick={() => setActiveTab('actions')}
+                                className={`flex flex-col items-center py-2 px-4 ${activeTab === 'actions' ? 'text-primary' : 'text-neutral-darkest'}`}
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
+                                </svg>
+                                <span className="text-xs">Actions</span>
+                            </button>
+                            <button 
+                                onClick={() => setActiveTab('threads')}
+                                className={`flex flex-col items-center py-2 px-4 ${activeTab === 'threads' ? 'text-primary' : 'text-neutral-darkest'}`}
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
+                                </svg>
+                                <span className="text-xs">Threads</span>
+                            </button>
+                            <button 
+                                onClick={() => setActiveTab('generators')}
+                                className={`flex flex-col items-center py-2 px-4 ${activeTab === 'generators' ? 'text-primary' : 'text-neutral-darkest'}`}
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                                <span className="text-xs">Generators</span>
+                            </button>
+                            <button 
+                                onClick={() => setActiveTab('reports')}
+                                className={`flex flex-col items-center py-2 px-4 ${activeTab === 'reports' ? 'text-primary' : 'text-neutral-darkest'}`}
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                                </svg>
+                                <span className="text-xs">Reports</span>
+                            </button>
+                        </div>
+                    </nav>
+                </div>
+            );
+        }
+
+        // Root component with providers
+        function Root() {
+            return (
+                <AuthProvider>
+                    <ToastProvider>
+                        <App />
+                    </ToastProvider>
+                </AuthProvider>
+            );
+        }
+
+        ReactDOM.render(<Root />, document.getElementById('root'));
+    </script>
+</body>
+</html>
