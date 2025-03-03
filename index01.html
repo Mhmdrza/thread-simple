@@ -1,0 +1,3440 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MindFlow</title>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/idb@7/build/umd.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/idb/7.0.2/idb.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <meta
+      name="description"
+      content="A tool for organizing thoughts and actions"
+    />
+    <meta name="theme-color" content="#4f46e5" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta
+      name="apple-mobile-web-app-status-bar-style"
+      content="black-translucent"
+    />
+    <meta name="apple-mobile-web-app-title" content="Thinking Tool" />
+    <link rel="manifest" href="manifest.json" />
+    <link rel="apple-touch-icon" href="icon-192x192.png" />
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              primary: {
+                50: "#f0f9ff",
+                100: "#e0f2fe",
+                200: "#bae6fd",
+                300: "#7dd3fc",
+                400: "#38bdf8",
+                500: "#0ea5e9",
+                600: "#0284c7",
+                700: "#0369a1",
+                800: "#075985",
+                900: "#0c4a6e",
+              },
+              secondary: {
+                50: "#f8fafc",
+                100: "#f1f5f9",
+                200: "#e2e8f0",
+                300: "#cbd5e1",
+                400: "#94a3b8",
+                500: "#64748b",
+                600: "#475569",
+                700: "#334155",
+                800: "#1e293b",
+                900: "#0f172a",
+              },
+              accent: {
+                50: "#f0fdf4",
+                100: "#dcfce7",
+                200: "#bbf7d0",
+                300: "#86efac",
+                400: "#4ade80",
+                500: "#22c55e",
+                600: "#16a34a",
+                700: "#15803d",
+                800: "#166534",
+                900: "#14532d",
+              },
+            },
+            animation: {
+              "fade-in": "fadeIn 0.3s ease-in-out",
+              "slide-up": "slideUp 0.3s ease-in-out",
+            },
+            keyframes: {
+              fadeIn: {
+                "0%": { opacity: 0 },
+                "100%": { opacity: 1 },
+              },
+              slideUp: {
+                "0%": { transform: "translateY(20px)", opacity: 0 },
+                "100%": { transform: "translateY(0)", opacity: 1 },
+              },
+            },
+          },
+        },
+      };
+    </script>
+    <style>
+      body {
+        font-family: "Inter", sans-serif;
+        overflow-x: hidden;
+      }
+
+      /* System dark mode support */
+      @media (prefers-color-scheme: dark) {
+        .dark-mode {
+          --bg-color: #0f172a;
+          --text-color: #f8fafc;
+          --card-bg: #1e293b;
+          --border-color: #334155;
+        }
+
+        body {
+          background-color: var(--bg-color);
+          color: var(--text-color);
+        }
+
+        .dark-card {
+          background-color: var(--card-bg);
+          border-color: var(--border-color);
+        }
+
+        .dark-border {
+          border-color: var(--border-color);
+        }
+
+        .dark-text {
+          color: var(--text-color);
+        }
+
+        .dark-input {
+          background-color: #1e293b;
+          border-color: #334155;
+          color: #f8fafc;
+        }
+
+        .dark-input::placeholder {
+          color: #64748b;
+        }
+      }
+    </style>
+  </head>
+  <body class="dark-mode">
+    <div id="app"></div>
+
+    <script type="text/babel">
+      // Database setup
+      const DB_NAME = "mindflow_db";
+      const DB_VERSION = 1;
+
+      async function initDB() {
+        return idb.openDB(DB_NAME, DB_VERSION, {
+          upgrade(db) {
+            // Topics store
+            if (!db.objectStoreNames.contains("topics")) {
+              const topicsStore = db.createObjectStore("topics", {
+                keyPath: "id",
+                autoIncrement: true,
+              });
+              topicsStore.createIndex("name", "name", { unique: true });
+
+              // Add default topics
+              topicsStore.add({ id: 1, name: "All", color: "#0ea5e9" });
+              topicsStore.add({ id: 2, name: "Personal", color: "#22c55e" });
+              topicsStore.add({ id: 3, name: "Work", color: "#f97316" });
+              topicsStore.add({ id: 4, name: "Ideas", color: "#8b5cf6" });
+            }
+
+            // Threads store
+            if (!db.objectStoreNames.contains("threads")) {
+              const threadsStore = db.createObjectStore("threads", {
+                keyPath: "id",
+                autoIncrement: true,
+              });
+              threadsStore.createIndex("topicId", "topicId");
+              threadsStore.createIndex("createdAt", "createdAt");
+            }
+
+            // Thread updates store
+            if (!db.objectStoreNames.contains("threadUpdates")) {
+              const updatesStore = db.createObjectStore("threadUpdates", {
+                keyPath: "id",
+                autoIncrement: true,
+              });
+              updatesStore.createIndex("threadId", "threadId");
+              updatesStore.createIndex("timestamp", "timestamp");
+            }
+
+            // Actions store
+            if (!db.objectStoreNames.contains("actions")) {
+              const actionsStore = db.createObjectStore("actions", {
+                keyPath: "id",
+                autoIncrement: true,
+              });
+              actionsStore.createIndex("threadId", "threadId");
+              actionsStore.createIndex("topicId", "topicId");
+              actionsStore.createIndex("status", "status");
+              actionsStore.createIndex("due", "due");
+              actionsStore.createIndex("createdAt", "createdAt");
+              actionsStore.createIndex("sequence", "sequence"); // Add sequence index
+              actionsStore.createIndex("isNextAction", "isNextAction"); // Flag for first action in sequence
+            }
+
+            // Action generators store
+            if (!db.objectStoreNames.contains("actionGenerators")) {
+              const generatorsStore = db.createObjectStore("actionGenerators", {
+                keyPath: "id",
+                autoIncrement: true,
+              });
+              generatorsStore.createIndex("topicId", "topicId");
+              generatorsStore.createIndex("frequency", "frequency");
+            }
+          },
+        });
+      }
+
+      // React component for the entire app
+      function App() {
+        const [db, setDb] = React.useState(null);
+        const [view, setView] = React.useState("home");
+        const [currentThread, setCurrentThread] = React.useState(null);
+        const [currentAction, setCurrentAction] = React.useState(null);
+
+        React.useEffect(() => {
+          async function setupDb() {
+            const database = await initDB();
+            setDb(database);
+          }
+          setupDb();
+        }, []);
+
+        if (!db) {
+          return (
+            <div className="flex h-screen items-center justify-center">
+              <div className="w-12 h-12 border-4 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
+            </div>
+          );
+        }
+
+        // Navigation handler
+        const navigateTo = (newView, data = null) => {
+          if (newView === "thread" && data) {
+            setCurrentThread(data);
+          } else if (newView === "action" && data) {
+            setCurrentAction(data);
+          }
+          setView(newView);
+          window.scrollTo(0, 0);
+        };
+
+        // Render the current view
+        const renderView = () => {
+          switch (view) {
+            case "home":
+              return <Home db={db} navigateTo={navigateTo} />;
+            case "thread":
+              return (
+                <ThreadDetail
+                  db={db}
+                  thread={currentThread}
+                  navigateTo={navigateTo}
+                />
+              );
+            case "action":
+              return (
+                <ActionDetail
+                  db={db}
+                  action={currentAction}
+                  navigateTo={navigateTo}
+                />
+              );
+            case "newThread":
+              return <NewThread db={db} navigateTo={navigateTo} />;
+            case "actions":
+              return <ActionsList db={db} navigateTo={navigateTo} />;
+            case "actionGenerators":
+              return <ActionGenerators db={db} navigateTo={navigateTo} />;
+            case "reports":
+              return <Reports db={db} />;
+            case "topics":
+              return <TopicsManager db={db} navigateTo={navigateTo} />;
+            default:
+              return <Home db={db} navigateTo={navigateTo} />;
+          }
+        };
+
+        return (
+          <div className="pb-24 min-h-screen bg-secondary-50 dark:bg-secondary-900 dark-mode">
+            {renderView()}
+            <BottomNav currentView={view} navigateTo={navigateTo} />
+          </div>
+        );
+      }
+
+      // Bottom navigation component
+      function BottomNav({ currentView, navigateTo }) {
+        return (
+          <div className="fixed bottom-0 w-full bg-white dark:bg-secondary-800 border-t border-secondary-200 dark:border-secondary-700 shadow-lg z-50">
+            <div className="flex justify-around max-w-md mx-auto">
+              <button
+                onClick={() => navigateTo("home")}
+                className={`flex flex-col items-center p-3 w-full ${
+                  currentView === "home"
+                    ? "text-primary-600 dark:text-primary-400"
+                    : "text-secondary-500 dark:text-secondary-400"
+                }`}
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="h-6 w-6"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"
+                  />
+                </svg>
+                <span className="text-xs">Home</span>
+              </button>
+              <button
+                onClick={() => navigateTo("actions")}
+                className={`flex flex-col items-center p-3 w-full ${
+                  currentView === "actions"
+                    ? "text-primary-600 dark:text-primary-400"
+                    : "text-secondary-500 dark:text-secondary-400"
+                }`}
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="h-6 w-6"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"
+                  />
+                </svg>
+                <span className="text-xs">Actions</span>
+              </button>
+              <button
+                onClick={() => navigateTo("actionGenerators")}
+                className={`flex flex-col items-center p-3 w-full ${
+                  currentView === "actionGenerators"
+                    ? "text-primary-600 dark:text-primary-400"
+                    : "text-secondary-500 dark:text-secondary-400"
+                }`}
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="h-6 w-6"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
+                  />
+                </svg>
+                <span className="text-xs">Generators</span>
+              </button>
+              <button
+                onClick={() => navigateTo("reports")}
+                className={`flex flex-col items-center p-3 w-full ${
+                  currentView === "reports"
+                    ? "text-primary-600 dark:text-primary-400"
+                    : "text-secondary-500 dark:text-secondary-400"
+                }`}
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="h-6 w-6"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"
+                  />
+                </svg>
+                <span className="text-xs">Reports</span>
+              </button>
+              <button
+                onClick={() => navigateTo("topics")}
+                className={`flex flex-col items-center p-3 w-full ${
+                  currentView === "topics"
+                    ? "text-primary-600 dark:text-primary-400"
+                    : "text-secondary-500 dark:text-secondary-400"
+                }`}
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="h-6 w-6"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"
+                  />
+                </svg>
+                <span className="text-xs">Topics</span>
+              </button>
+            </div>
+          </div>
+        );
+      }
+
+      // Home view component
+      function Home({ db, navigateTo }) {
+        const [topics, setTopics] = React.useState([]);
+        const [selectedTopic, setSelectedTopic] = React.useState(0); // 0 means "All topics"
+        const [threads, setThreads] = React.useState([]);
+        const [actions, setActions] = React.useState([]);
+        const [loading, setLoading] = React.useState(true);
+        const [newAction, setNewAction] = React.useState("");
+
+        // Load topics, actions, and threads on component mount
+        React.useEffect(() => {
+          async function loadData() {
+            setLoading(true);
+
+            // Load topics
+            const allTopics = await db.getAll("topics");
+            setTopics(allTopics);
+
+            // Load actions
+            await loadActions(selectedTopic);
+
+            // Load threads with latest updates
+            await loadThreads(selectedTopic);
+
+            setLoading(false);
+          }
+
+          loadData();
+        }, [db, selectedTopic]);
+
+        async function loadActions(topicId) {
+          let actions;
+          if (topicId === 0) {
+            actions = await db.getAllFromIndex("actions", "status", "pending");
+          } else {
+            const index = db.transaction("actions").store.index("topicId");
+            actions = await index.getAll(IDBKeyRange.only(topicId));
+            actions = actions.filter((action) => action.status === "pending");
+          }
+
+          // Check for "untouched" actions (older than a day)
+          const oneDayAgo = new Date();
+          oneDayAgo.setDate(oneDayAgo.getDate() - 1);
+
+          const processedActions = actions.map((action) => {
+            const createdAt = new Date(action.createdAt);
+            if (createdAt < oneDayAgo && action.status === "pending") {
+              return { ...action, untouched: true };
+            }
+            return action;
+          });
+
+          setActions(processedActions);
+        }
+
+        async function loadThreads(topicId) {
+          let allThreads;
+          if (topicId === 0) {
+            allThreads = await db.getAll("threads");
+          } else {
+            const index = db.transaction("threads").store.index("topicId");
+            allThreads = await index.getAll(IDBKeyRange.only(topicId));
+          }
+
+          // Load latest update for each thread
+          const threadsWithUpdates = await Promise.all(
+            allThreads.map(async (thread) => {
+              const index = db
+                .transaction("threadUpdates")
+                .store.index("threadId");
+              const updates = await index.getAll(IDBKeyRange.only(thread.id));
+              updates.sort(
+                (a, b) => new Date(b.timestamp) - new Date(a.timestamp)
+              );
+              return {
+                ...thread,
+                latestUpdate: updates[0] || null,
+              };
+            })
+          );
+
+          // Sort by most recently updated
+          threadsWithUpdates.sort((a, b) => {
+            const dateA = a.latestUpdate
+              ? new Date(a.latestUpdate.timestamp)
+              : new Date(a.createdAt);
+            const dateB = b.latestUpdate
+              ? new Date(b.latestUpdate.timestamp)
+              : new Date(b.createdAt);
+            return dateB - dateA;
+          });
+
+          setThreads(threadsWithUpdates);
+        }
+
+        // Handle creating a new action
+        const handleNewAction = async (e) => {
+          e.preventDefault();
+          if (!newAction.trim()) return;
+
+          const action = {
+            text: newAction,
+            status: "pending",
+            topicId: selectedTopic || 1, // Use "All" as default topic
+            createdAt: new Date().toISOString(),
+            due: null,
+          };
+
+          await db.add("actions", action);
+          setNewAction("");
+          await loadActions(selectedTopic);
+        };
+
+        // Handle action status change
+        const handleActionStatusChange = async (actionId, newStatus) => {
+          const action = await db.get("actions", actionId);
+          action.status = newStatus;
+          action.completedAt =
+            newStatus === "completed" ? new Date().toISOString() : null;
+
+          await db.put("actions", action);
+          await loadActions(selectedTopic);
+        };
+
+        return (
+          <div className="max-w-7xl mx-auto px-4 py-6 animate-fade-in">
+            <div className="flex justify-between items-center mb-6">
+              <h1 className="text-2xl font-bold text-secondary-900 dark:text-secondary-100">
+                MindFlow
+              </h1>
+            </div>
+
+            {/* Topic filter */}
+            <div className="overflow-x-auto pb-3 mb-4">
+              <div className="flex space-x-2 w-max">
+                <button
+                  onClick={() => setSelectedTopic(0)}
+                  className={`px-4 py-2 rounded-full text-sm font-medium transition ${
+                    selectedTopic === 0
+                      ? "bg-primary-100 text-primary-800 dark:bg-primary-800 dark:text-primary-100"
+                      : "bg-white text-secondary-700 dark:bg-secondary-800 dark:text-secondary-300"
+                  } shadow-sm`}
+                >
+                  All Topics
+                </button>
+
+                {topics.map((topic) => (
+                  <button
+                    key={topic.id}
+                    onClick={() => setSelectedTopic(topic.id)}
+                    className={`px-4 py-2 rounded-full text-sm font-medium transition ${
+                      selectedTopic === topic.id
+                        ? "bg-primary-100 text-primary-800 dark:bg-primary-800 dark:text-primary-100"
+                        : "bg-white text-secondary-700 dark:bg-secondary-800 dark:text-secondary-300"
+                    } shadow-sm`}
+                    style={
+                      selectedTopic === topic.id
+                        ? {
+                            backgroundColor: `${topic.color}20`,
+                            color: topic.color,
+                          }
+                        : {}
+                    }
+                  >
+                    {topic.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Quick action entry */}
+            <form onSubmit={handleNewAction} className="mb-6">
+              <div className="flex">
+                <input
+                  type="text"
+                  value={newAction}
+                  onChange={(e) => setNewAction(e.target.value)}
+                  placeholder="Add a new action..."
+                  className="flex-grow px-4 py-3 rounded-l-lg border border-secondary-200 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:bg-secondary-800 dark:border-secondary-700 dark:text-white"
+                />
+                <button
+                  type="submit"
+                  className="px-4 py-3 rounded-r-lg bg-primary-500 text-white hover:bg-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
+                >
+                  Add
+                </button>
+              </div>
+            </form>
+
+            {loading ? (
+              <div className="flex justify-center py-8">
+                <div className="w-10 h-10 border-4 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
+              </div>
+            ) : (
+              <div className="space-y-8">
+                {/* Actions section */}
+                <div>
+                  <div className="flex justify-between items-center mb-4">
+                    <h2 className="text-lg font-semibold text-secondary-900 dark:text-secondary-100">
+                      Recent Actions
+                    </h2>
+                    <button
+                      onClick={() => navigateTo("actions")}
+                      className="text-sm text-primary-600 hover:text-primary-800 dark:text-primary-400 dark:hover:text-primary-300"
+                    >
+                      See all
+                    </button>
+                  </div>
+
+                  {actions.length > 0 ? (
+                    <div className="space-y-3">
+                      {actions.slice(0, 5).map((action) => (
+                        <div
+                          key={action.id}
+                          className={`bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-4 flex items-center border-l-4 ${
+                            action.untouched
+                              ? "border-red-500"
+                              : "border-secondary-300 dark:border-secondary-600"
+                          }`}
+                        >
+                          <button
+                            onClick={() =>
+                              handleActionStatusChange(action.id, "completed")
+                            }
+                            className="w-6 h-6 rounded-full border-2 border-secondary-300 dark:border-secondary-500 hover:border-accent-500 dark:hover:border-accent-400 mr-3 flex-shrink-0"
+                            aria-label="Mark as completed"
+                          ></button>
+                          <div className="flex-grow">
+                            <p className="text-secondary-900 dark:text-secondary-100 line-clamp-2">
+                              {action.text}
+                            </p>
+                            {action.untouched && (
+                              <span className="text-xs font-medium text-red-600 dark:text-red-400">
+                                Untouched for over a day
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex space-x-1 ml-2">
+                            <button
+                              onClick={() =>
+                                handleActionStatusChange(action.id, "delayed")
+                              }
+                              className="text-orange-500 hover:text-orange-600 dark:hover:text-orange-400 p-2"
+                              title="Delay"
+                            >
+                              <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                className="h-5 w-5"
+                                fill="none"
+                                viewBox="0 0 24 24"
+                                stroke="currentColor"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
+                                />
+                              </svg>
+                            </button>
+                            <button
+                              onClick={() =>
+                                handleActionStatusChange(action.id, "discarded")
+                              }
+                              className="text-red-500 hover:text-red-600 dark:hover:text-red-400 p-2"
+                              title="Discard"
+                            >
+                              <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                className="h-5 w-5"
+                                fill="none"
+                                viewBox="0 0 24 24"
+                                stroke="currentColor"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                                />
+                              </svg>
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-6 text-center">
+                      <p className="text-secondary-600 dark:text-secondary-400">
+                        No pending actions in this topic.
+                      </p>
+                      <button
+                        onClick={() => navigateTo("actions")}
+                        className="mt-3 inline-flex items-center text-sm font-medium text-primary-600 hover:text-primary-800 dark:text-primary-400 dark:hover:text-primary-300"
+                      >
+                        See all actions
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          className="ml-1 h-4 w-4"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M13 7l5 5m0 0l-5 5m5-5H6"
+                          />
+                        </svg>
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Threads section */}
+                <div>
+                  <div className="flex justify-between items-center mb-4">
+                    <h2 className="text-lg font-semibold text-secondary-900 dark:text-secondary-100">
+                      Recent Threads
+                    </h2>
+                    <button
+                      onClick={() => navigateTo("newThread")}
+                      className="text-sm text-primary-600 hover:text-primary-800 dark:text-primary-400 dark:hover:text-primary-300"
+                    >
+                      New Thread
+                    </button>
+                  </div>
+
+                  {threads.length > 0 ? (
+                    <div className="space-y-4">
+                      {threads.slice(0, 5).map((thread) => {
+                        const topic = topics.find(
+                          (t) => t.id === thread.topicId
+                        );
+                        return (
+                          <div
+                            key={thread.id}
+                            onClick={() => navigateTo("thread", thread)}
+                            className="bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-5 cursor-pointer hover:shadow-md transition"
+                          >
+                            <div className="flex justify-between items-start mb-2">
+                              <h3 className="text-base font-medium text-secondary-900 dark:text-secondary-100">
+                                {thread.title}
+                              </h3>
+                              {topic && (
+                                <span
+                                  className="px-2 py-1 text-xs rounded-full"
+                                  style={{
+                                    backgroundColor: `${topic.color}20`,
+                                    color: topic.color,
+                                  }}
+                                >
+                                  {topic.name}
+                                </span>
+                              )}
+                            </div>
+
+                            {thread.latestUpdate ? (
+                              <div className="mt-3 border-l-2 border-secondary-200 dark:border-secondary-700 pl-3">
+                                <div className="text-xs text-secondary-500 dark:text-secondary-400 mb-1">
+                                  Latest update:{" "}
+                                  {new Date(
+                                    thread.latestUpdate.timestamp
+                                  ).toLocaleString()}
+                                </div>
+                                <p className="text-sm text-secondary-700 dark:text-secondary-300">
+                                  {thread.latestUpdate.content}
+                                </p>
+                              </div>
+                            ) : (
+                              <p className="mt-2 text-sm text-secondary-600 dark:text-secondary-400">
+                                No updates yet. Click to add your first thought.
+                              </p>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-6 text-center">
+                      <p className="text-secondary-600 dark:text-secondary-400">
+                        No threads in this topic yet.
+                      </p>
+                      <button
+                        onClick={() => navigateTo("newThread")}
+                        className="mt-3 inline-flex items-center text-sm font-medium text-primary-600 hover:text-primary-800 dark:text-primary-400 dark:hover:text-primary-300"
+                      >
+                        Create your first thread
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          className="ml-1 h-4 w-4"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M13 7l5 5m0 0l-5 5m5-5H6"
+                          />
+                        </svg>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      // Topic manager component
+      function TopicsManager({ db, navigateTo }) {
+        const [topics, setTopics] = React.useState([]);
+        const [loading, setLoading] = React.useState(true);
+        const [showAddModal, setShowAddModal] = React.useState(false);
+        const [editingTopic, setEditingTopic] = React.useState(null);
+        const [newTopicName, setNewTopicName] = React.useState("");
+        const [newTopicColor, setNewTopicColor] = React.useState("#22c55e");
+
+        React.useEffect(() => {
+          loadTopics();
+        }, []);
+
+        async function loadTopics() {
+          setLoading(true);
+          const allTopics = await db.getAll("topics");
+          setTopics(allTopics);
+          setLoading(false);
+        }
+
+        const openAddModal = () => {
+          setEditingTopic(null);
+          setNewTopicName("");
+          setNewTopicColor("#22c55e");
+          setShowAddModal(true);
+        };
+
+        const openEditModal = (topic) => {
+          setEditingTopic(topic);
+          setNewTopicName(topic.name);
+          setNewTopicColor(topic.color);
+          setShowAddModal(true);
+        };
+
+        const handleSaveTopic = async () => {
+          if (!newTopicName.trim()) return;
+
+          if (editingTopic) {
+            // Update existing topic
+            await db.put("topics", {
+              ...editingTopic,
+              name: newTopicName,
+              color: newTopicColor,
+            });
+          } else {
+            // Create new topic
+            await db.add("topics", {
+              name: newTopicName,
+              color: newTopicColor,
+            });
+          }
+
+          setShowAddModal(false);
+          await loadTopics();
+        };
+
+        const handleDeleteTopic = async (topicId) => {
+          if (topicId <= 4) {
+            alert("Cannot delete default topics");
+            return;
+          }
+
+          // Check if topic is in use
+          const threadsIndex = db.transaction("threads").store.index("topicId");
+          const threadsWithTopic = await threadsIndex.count(
+            IDBKeyRange.only(topicId)
+          );
+
+          const actionsIndex = db.transaction("actions").store.index("topicId");
+          const actionsWithTopic = await actionsIndex.count(
+            IDBKeyRange.only(topicId)
+          );
+
+          if (threadsWithTopic > 0 || actionsWithTopic > 0) {
+            const confirmed = window.confirm(
+              `This topic is used by ${threadsWithTopic} threads and ${actionsWithTopic} actions. Delete anyway? (Items will be moved to "All" topic)`
+            );
+
+            if (!confirmed) return;
+
+            // Move threads to "All" topic
+            const allThreads = await threadsIndex.getAll(
+              IDBKeyRange.only(topicId)
+            );
+            for (const thread of allThreads) {
+              thread.topicId = 1; // "All" topic
+              await db.put("threads", thread);
+            }
+
+            // Move actions to "All" topic
+            const allActions = await actionsIndex.getAll(
+              IDBKeyRange.only(topicId)
+            );
+            for (const action of allActions) {
+              action.topicId = 1; // "All" topic
+              await db.put("actions", action);
+            }
+          }
+
+          // Delete the topic
+          await db.delete("topics", topicId);
+          await loadTopics();
+        };
+
+        return (
+          <div className="max-w-7xl mx-auto px-4 py-6 animate-fade-in">
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-2xl font-bold text-secondary-900 dark:text-secondary-100">
+                Manage Topics
+              </h2>
+              <button
+                onClick={openAddModal}
+                className="flex items-center px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="h-5 w-5 mr-1"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M12 4v16m8-8H4"
+                  />
+                </svg>
+                New Topic
+              </button>
+            </div>
+
+            {loading ? (
+              <div className="flex justify-center py-8">
+                <div className="w-10 h-10 border-4 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {topics.map((topic) => (
+                  <div
+                    key={topic.id}
+                    className="bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-4 flex items-center justify-between"
+                  >
+                    <div className="flex items-center">
+                      <div
+                        className="w-6 h-6 rounded-full mr-3"
+                        style={{ backgroundColor: topic.color }}
+                      ></div>
+                      <span className="text-secondary-900 dark:text-secondary-100 font-medium">
+                        {topic.name}
+                      </span>
+                    </div>
+
+                    <div className="flex space-x-2">
+                      <button
+                        onClick={() => openEditModal(topic)}
+                        className="text-secondary-500 hover:text-secondary-700 dark:text-secondary-400 dark:hover:text-secondary-200 p-2"
+                      >
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          className="h-5 w-5"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                          />
+                        </svg>
+                      </button>
+                      {topic.id > 4 && (
+                        <button
+                          onClick={() => handleDeleteTopic(topic.id)}
+                          className="text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 p-2"
+                        >
+                          <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            className="h-5 w-5"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke="currentColor"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                            />
+                          </svg>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Add/Edit Topic Modal */}
+            {showAddModal && (
+              <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+                <div className="bg-white dark:bg-secondary-800 rounded-lg shadow-lg p-6 w-full max-w-md">
+                  <h3 className="text-lg font-semibold text-secondary-900 dark:text-secondary-100 mb-4">
+                    {editingTopic ? "Edit Topic" : "Add New Topic"}
+                  </h3>
+
+                  <div className="space-y-4">
+                    <div>
+                      <label
+                        htmlFor="topicName"
+                        className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1"
+                      >
+                        Topic Name
+                      </label>
+                      <input
+                        id="topicName"
+                        type="text"
+                        value={newTopicName}
+                        onChange={(e) => setNewTopicName(e.target.value)}
+                        className="w-full px-4 py-2 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                        placeholder="Enter topic name"
+                      />
+                    </div>
+
+                    <div>
+                      <label
+                        htmlFor="topicColor"
+                        className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1"
+                      >
+                        Topic Color
+                      </label>
+                      <div className="flex items-center">
+                        <input
+                          id="topicColor"
+                          type="color"
+                          value={newTopicColor}
+                          onChange={(e) => setNewTopicColor(e.target.value)}
+                          className="w-10 h-10 rounded-lg border border-secondary-200 dark:border-secondary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent mr-3"
+                        />
+                        <input
+                          type="text"
+                          value={newTopicColor}
+                          onChange={(e) => setNewTopicColor(e.target.value)}
+                          className="w-full px-4 py-2 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                          placeholder="#RRGGBB"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end space-x-3 mt-6">
+                    <button
+                      onClick={() => setShowAddModal(false)}
+                      className="px-4 py-2 text-secondary-700 dark:text-secondary-300 hover:bg-secondary-100 dark:hover:bg-secondary-700 rounded-lg"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleSaveTopic}
+                      className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
+                    >
+                      {editingTopic ? "Save Changes" : "Add Topic"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      // Utility functions for date formatting
+      function formatDate(dateString) {
+        const date = new Date(dateString);
+        return date.toLocaleDateString(undefined, {
+          year: "numeric",
+          month: "short",
+          day: "numeric",
+        });
+      }
+
+      function formatDateTime(dateString) {
+        const date = new Date(dateString);
+        return date.toLocaleDateString(undefined, {
+          year: "numeric",
+          month: "short",
+          day: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+      }
+
+      // Thread detail view component
+      function ThreadDetail({ db, thread, navigateTo }) {
+        const [updates, setUpdates] = React.useState([]);
+        const [newUpdate, setNewUpdate] = React.useState("");
+        const [newAction, setNewAction] = React.useState("");
+        const [threadActions, setThreadActions] = React.useState([]);
+        const [loading, setLoading] = React.useState(true);
+        const [topic, setTopic] = React.useState(null);
+
+        React.useEffect(() => {
+          async function loadData() {
+            setLoading(true);
+
+            // Load thread topic
+            if (thread.topicId) {
+              const topicData = await db.get("topics", thread.topicId);
+              setTopic(topicData);
+            }
+
+            // Load thread updates
+            const index = db
+              .transaction("threadUpdates")
+              .store.index("threadId");
+            const threadUpdates = await index.getAll(
+              IDBKeyRange.only(thread.id)
+            );
+            threadUpdates.sort(
+              (a, b) => new Date(b.timestamp) - new Date(a.timestamp)
+            );
+            setUpdates(threadUpdates);
+
+            // Load thread actions in sequence order
+            await loadThreadActions();
+
+            setLoading(false);
+          }
+
+          loadData();
+        }, [db, thread]);
+
+        async function loadThreadActions() {
+          const index = db.transaction("actions").store.index("threadId");
+          const actions = await index.getAll(IDBKeyRange.only(thread.id));
+
+          // Sort actions by sequence
+          actions.sort((a, b) => (a.sequence || 0) - (b.sequence || 0));
+          setThreadActions(actions);
+        }
+
+        const handleNewUpdate = async (e) => {
+          e.preventDefault();
+          if (!newUpdate.trim()) return;
+
+          const update = {
+            threadId: thread.id,
+            content: newUpdate,
+            timestamp: new Date().toISOString(),
+          };
+
+          await db.add("threadUpdates", update);
+          setNewUpdate("");
+
+          // Reload updates
+          const index = db.transaction("threadUpdates").store.index("threadId");
+          const threadUpdates = await index.getAll(IDBKeyRange.only(thread.id));
+          threadUpdates.sort(
+            (a, b) => new Date(b.timestamp) - new Date(a.timestamp)
+          );
+          setUpdates(threadUpdates);
+        };
+
+        // Add a new action to the thread sequence
+        const handleNewAction = async (e) => {
+          e.preventDefault();
+          if (!newAction.trim()) return;
+
+          // Get max sequence number from existing actions
+          const maxSequence =
+            threadActions.length > 0
+              ? Math.max(...threadActions.map((a) => a.sequence || 0))
+              : -1;
+
+          // Determine if this is the first action in the sequence
+          const isFirstAction =
+            threadActions.length === 0 ||
+            !threadActions.some((a) => a.status === "pending");
+
+          const action = {
+            text: newAction,
+            threadId: thread.id,
+            topicId: thread.topicId,
+            status: "pending",
+            createdAt: new Date().toISOString(),
+            sequence: maxSequence + 1,
+            isNextAction: isFirstAction, // Mark as next action if it's the first pending action
+          };
+
+          await db.add("actions", action);
+          setNewAction("");
+          await loadThreadActions();
+        };
+
+        const handleActionStatusChange = async (actionId, newStatus) => {
+          // Get the current action
+          const action = await db.get("actions", actionId);
+          const currentSequence = action.sequence;
+
+          // Update the current action status
+          action.status = newStatus;
+          action.completedAt =
+            newStatus === "completed" ? new Date().toISOString() : null;
+          action.isNextAction = false;
+          await db.put("actions", action);
+
+          // Find the next action in sequence and mark it as the next action
+          const nextActions = threadActions.filter(
+            (a) => a.sequence > currentSequence && a.status === "pending"
+          );
+
+          if (nextActions.length > 0) {
+            const nextAction = nextActions.sort(
+              (a, b) => a.sequence - b.sequence
+            )[0];
+            nextAction.isNextAction = true;
+            await db.put("actions", nextAction);
+          }
+
+          await loadThreadActions();
+        };
+
+        return (
+          <div className="max-w-4xl mx-auto px-4 py-6 animate-slide-up">
+            <button
+              onClick={() => navigateTo("home")}
+              className="flex items-center mb-4 text-secondary-600 hover:text-secondary-800 dark:text-secondary-400 dark:hover:text-secondary-200"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="h-5 w-5 mr-1"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+              >
+                <path
+                  fillRule="evenodd"
+                  d="M9.707 14.707a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 1.414L7.414 9H15a1 1 0 110 2H7.414l2.293 2.293a1 1 0 010 1.414z"
+                  clipRule="evenodd"
+                />
+              </svg>
+              Back
+            </button>
+
+            <div className="bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-6 mb-6">
+              <div className="flex justify-between items-start mb-4">
+                <div>
+                  <h1 className="text-2xl font-bold text-secondary-900 dark:text-secondary-100">
+                    {thread.title}
+                  </h1>
+                  <div className="mt-1 flex items-center">
+                    <span
+                      className={`text-xs font-medium px-2 py-1 rounded-full ${
+                        thread.state === "open"
+                          ? "bg-accent-100 text-accent-800 dark:bg-accent-900 dark:text-accent-200"
+                          : thread.state === "blocked"
+                          ? "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200"
+                          : "bg-secondary-100 text-secondary-800 dark:bg-secondary-900 dark:text-secondary-200"
+                      }`}
+                    >
+                      {thread.state || "open"}
+                    </span>
+                    {topic && (
+                      <span
+                        className="ml-2 px-2 py-1 text-xs rounded-full"
+                        style={{
+                          backgroundColor: `${topic.color}20`,
+                          color: topic.color,
+                        }}
+                      >
+                        {topic.name}
+                      </span>
+                    )}
+                    <span className="ml-2 text-xs text-secondary-500 dark:text-secondary-400">
+                      Created {new Date(thread.createdAt).toLocaleDateString()}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {thread.description && (
+                <div className="mb-5 text-secondary-700 dark:text-secondary-300">
+                  <p>{thread.description}</p>
+                </div>
+              )}
+
+              {/* Thread Actions Section - New Vertical Stepper UI */}
+              <div className="mb-6 border-t border-secondary-200 dark:border-secondary-700 pt-5">
+                <h2 className="text-lg font-semibold text-secondary-900 dark:text-secondary-100 mb-3">
+                  Thread Actions
+                </h2>
+
+                {/* Add new action form */}
+                <form onSubmit={handleNewAction} className="mb-4">
+                  <div className="flex">
+                    <input
+                      type="text"
+                      value={newAction}
+                      onChange={(e) => setNewAction(e.target.value)}
+                      placeholder="Add a sequential action..."
+                      className="flex-grow px-4 py-2 rounded-l-lg border border-secondary-200 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:bg-secondary-800 dark:border-secondary-700 dark:text-white"
+                    />
+                    <button
+                      type="submit"
+                      className="px-4 py-2 rounded-r-lg bg-primary-500 text-white hover:bg-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
+                    >
+                      Add Action
+                    </button>
+                  </div>
+                </form>
+
+                {/* Vertical Stepper showing thread actions */}
+                {threadActions.length > 0 ? (
+                  <div className="relative ml-4">
+                    {/* Vertical line connecting the steps */}
+                    <div className="absolute left-4 top-0 bottom-0 w-0.5 bg-secondary-200 dark:bg-secondary-700"></div>
+
+                    {threadActions.map((action, index) => (
+                      <div key={action.id} className="relative mb-4 pb-2">
+                        <div className="flex items-start">
+                          {/* Step indicator */}
+                          <div
+                            className={`absolute left-0 z-10 flex items-center justify-center w-8 h-8 rounded-full mt-1 border-2 ${
+                              action.status === "completed"
+                                ? "bg-accent-500 border-accent-600 text-white"
+                                : action.status === "discarded"
+                                ? "bg-red-100 border-red-300 text-red-800 dark:bg-red-900 dark:border-red-700 dark:text-red-200"
+                                : action.isNextAction
+                                ? "bg-primary-100 border-primary-500 text-primary-800 dark:bg-primary-900 dark:border-primary-500 dark:text-primary-200"
+                                : "bg-white border-secondary-300 text-secondary-500 dark:bg-secondary-800 dark:border-secondary-600 dark:text-secondary-400"
+                            }`}
+                          >
+                            {action.status === "completed" ? (
+                              <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                className="h-5 w-5"
+                                viewBox="0 0 20 20"
+                                fill="currentColor"
+                              >
+                                <path
+                                  fillRule="evenodd"
+                                  d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+                                  clipRule="evenodd"
+                                />
+                              </svg>
+                            ) : (
+                              index + 1
+                            )}
+                          </div>
+
+                          {/* Action content */}
+                          <div className="ml-12 bg-white dark:bg-secondary-800 shadow-sm rounded-lg border border-secondary-200 dark:border-secondary-700 p-4 w-full">
+                            <div className="flex justify-between">
+                              <p
+                                className={`text-secondary-900 dark:text-secondary-100 ${
+                                  action.status === "completed"
+                                    ? "line-through text-secondary-500"
+                                    : ""
+                                }`}
+                              >
+                                {action.text}
+                              </p>
+
+                              {/* Action is pending - show action buttons */}
+                              {action.status === "pending" && (
+                                <div className="flex space-x-1 ml-2">
+                                  <button
+                                    onClick={() =>
+                                      handleActionStatusChange(
+                                        action.id,
+                                        "completed"
+                                      )
+                                    }
+                                    className="text-accent-500 hover:text-accent-600 dark:hover:text-accent-400 p-1"
+                                    title="Complete"
+                                  >
+                                    <svg
+                                      xmlns="http://www.w3.org/2000/svg"
+                                      className="h-5 w-5"
+                                      fill="none"
+                                      viewBox="0 0 24 24"
+                                      stroke="currentColor"
+                                    >
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        strokeWidth={2}
+                                        d="M5 13l4 4L19 7"
+                                      />
+                                    </svg>
+                                  </button>
+                                  <button
+                                    onClick={() =>
+                                      handleActionStatusChange(
+                                        action.id,
+                                        "delegated"
+                                      )
+                                    }
+                                    className="text-blue-500 hover:text-blue-600 dark:hover:text-blue-400 p-1"
+                                    title="Delegate"
+                                  >
+                                    <svg
+                                      xmlns="http://www.w3.org/2000/svg"
+                                      className="h-5 w-5"
+                                      fill="none"
+                                      viewBox="0 0 24 24"
+                                      stroke="currentColor"
+                                    >
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        strokeWidth={2}
+                                        d="M7 11.5V14m0-2.5v-6a1.5 1.5 0 113 0m-3 6a1.5 1.5 0 00-3 0v2a7.5 7.5 0 0015 0v-5a1.5 1.5 0 00-3 0m-6-3V11m0-5.5v-1a1.5 1.5 0 013 0v1m0 0V11m0-5.5a1.5 1.5 0 013 0v3m0 0V11"
+                                      />
+                                    </svg>
+                                  </button>
+                                  <button
+                                    onClick={() =>
+                                      handleActionStatusChange(
+                                        action.id,
+                                        "discarded"
+                                      )
+                                    }
+                                    className="text-red-500 hover:text-red-600 dark:hover:text-red-400 p-1"
+                                    title="Discard"
+                                  >
+                                    <svg
+                                      xmlns="http://www.w3.org/2000/svg"
+                                      className="h-5 w-5"
+                                      fill="none"
+                                      viewBox="0 0 24 24"
+                                      stroke="currentColor"
+                                    >
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        strokeWidth={2}
+                                        d="M6 18L18 6M6 6l12 12"
+                                      />
+                                    </svg>
+                                  </button>
+                                </div>
+                              )}
+
+                              {/* Action is completed or discarded - show status */}
+                              {action.status !== "pending" && (
+                                <span
+                                  className={`text-xs px-2 py-1 rounded-full ${
+                                    action.status === "completed"
+                                      ? "bg-accent-100 text-accent-800 dark:bg-accent-900 dark:text-accent-200"
+                                      : action.status === "discarded"
+                                      ? "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200"
+                                      : "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200"
+                                  }`}
+                                >
+                                  {action.status}
+                                </span>
+                              )}
+                            </div>
+
+                            {action.completedAt && (
+                              <div className="mt-1 text-xs text-secondary-500 dark:text-secondary-400">
+                                {action.status} on{" "}
+                                {new Date(action.completedAt).toLocaleString()}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center py-6 text-secondary-500 dark:text-secondary-400 border border-dashed border-secondary-300 dark:border-secondary-700 rounded-lg">
+                    No actions created for this thread yet.
+                    <br />
+                    Add your first action above to start planning.
+                  </div>
+                )}
+              </div>
+
+              {/* Thread Updates Section */}
+              <div className="border-t border-secondary-200 dark:border-secondary-700 pt-5">
+                <h2 className="text-lg font-semibold text-secondary-900 dark:text-secondary-100 mb-3">
+                  Thread Updates
+                </h2>
+
+                <form onSubmit={handleNewUpdate} className="mb-4">
+                  <div className="flex">
+                    <input
+                      type="text"
+                      value={newUpdate}
+                      onChange={(e) => setNewUpdate(e.target.value)}
+                      placeholder="Add a status update..."
+                      className="flex-grow px-4 py-2 rounded-l-lg border border-secondary-200 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:bg-secondary-800 dark:border-secondary-700 dark:text-white"
+                    />
+                    <button
+                      type="submit"
+                      className="px-4 py-2 rounded-r-lg bg-secondary-500 text-white hover:bg-secondary-600 focus:outline-none focus:ring-2 focus:ring-secondary-500 focus:ring-offset-2 dark:bg-secondary-600 dark:hover:bg-secondary-700"
+                    >
+                      Add Update
+                    </button>
+                  </div>
+                </form>
+
+                {updates.length > 0 ? (
+                  <div className="space-y-4">
+                    {updates.map((update) => (
+                      <div
+                        key={update.id}
+                        className="bg-secondary-50 dark:bg-secondary-900 rounded-lg p-4"
+                      >
+                        <p className="text-secondary-800 dark:text-secondary-200">
+                          {update.content}
+                        </p>
+                        <p className="mt-2 text-xs text-secondary-500 dark:text-secondary-400">
+                          {new Date(update.timestamp).toLocaleString()}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center py-4 text-secondary-500 dark:text-secondary-400">
+                    No updates yet.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      }
+      function NewThread({ db, navigateTo }) {
+        const [title, setTitle] = React.useState("");
+        const [description, setDescription] = React.useState("");
+        const [selectedTopic, setSelectedTopic] = React.useState(1); // Default to first topic
+        const [topics, setTopics] = React.useState([]);
+        const [initialAction, setInitialAction] = React.useState(""); // New field for initial action
+        const [loading, setLoading] = React.useState(true);
+
+        React.useEffect(() => {
+          async function loadTopics() {
+            setLoading(true);
+            const allTopics = await db.getAll("topics");
+            setTopics(allTopics);
+            setLoading(false);
+          }
+          loadTopics();
+        }, [db]);
+
+        const handleSubmit = async (e) => {
+          e.preventDefault();
+          if (!title.trim()) return;
+
+          // Create new thread
+          const thread = {
+            title: title.trim(),
+            description: description.trim(),
+            topicId: selectedTopic,
+            createdAt: new Date().toISOString(),
+            state: "open",
+          };
+
+          const threadId = await db.add("threads", thread);
+
+          // If there's an initial action, create it
+          if (initialAction.trim()) {
+            const action = {
+              text: initialAction.trim(),
+              threadId,
+              topicId: selectedTopic,
+              status: "pending",
+              createdAt: new Date().toISOString(),
+              sequence: 0,
+              isNextAction: true, // First action is automatically the next action
+            };
+
+            await db.add("actions", action);
+          }
+
+          // Navigate to the new thread
+          navigateTo("thread", { ...thread, id: threadId });
+        };
+
+        return (
+          <div className="max-w-4xl mx-auto px-4 py-6 animate-slide-up">
+            <button
+              onClick={() => navigateTo("home")}
+              className="flex items-center mb-4 text-secondary-600 hover:text-secondary-800 dark:text-secondary-400 dark:hover:text-secondary-200"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="h-5 w-5 mr-1"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+              >
+                <path
+                  fillRule="evenodd"
+                  d="M9.707 14.707a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 1.414L7.414 9H15a1 1 0 110 2H7.414l2.293 2.293a1 1 0 010 1.414z"
+                  clipRule="evenodd"
+                />
+              </svg>
+              Back
+            </button>
+
+            <div className="bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-6">
+              <h1 className="text-2xl font-bold text-secondary-900 dark:text-secondary-100 mb-6">
+                Create New Thread
+              </h1>
+
+              {loading ? (
+                <div className="flex justify-center py-8">
+                  <div className="w-10 h-10 border-4 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
+                </div>
+              ) : (
+                <form onSubmit={handleSubmit}>
+                  <div className="mb-4">
+                    <label
+                      className="block text-secondary-700 dark:text-secondary-300 mb-2"
+                      htmlFor="title"
+                    >
+                      Title
+                    </label>
+                    <input
+                      id="title"
+                      type="text"
+                      value={title}
+                      onChange={(e) => setTitle(e.target.value)}
+                      className="w-full px-4 py-2 rounded-lg border border-secondary-200 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:bg-secondary-800 dark:border-secondary-700 dark:text-white"
+                      placeholder="Thread title"
+                      required
+                    />
+                  </div>
+
+                  <div className="mb-4">
+                    <label
+                      className="block text-secondary-700 dark:text-secondary-300 mb-2"
+                      htmlFor="description"
+                    >
+                      Description
+                    </label>
+                    <textarea
+                      id="description"
+                      value={description}
+                      onChange={(e) => setDescription(e.target.value)}
+                      className="w-full px-4 py-2 rounded-lg border border-secondary-200 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:bg-secondary-800 dark:border-secondary-700 dark:text-white"
+                      placeholder="Description (optional)"
+                      rows="3"
+                    ></textarea>
+                  </div>
+
+                  <div className="mb-4">
+                    <label
+                      className="block text-secondary-700 dark:text-secondary-300 mb-2"
+                      htmlFor="topic"
+                    >
+                      Topic
+                    </label>
+                    <select
+                      id="topic"
+                      value={selectedTopic}
+                      onChange={(e) => setSelectedTopic(Number(e.target.value))}
+                      className="w-full px-4 py-2 rounded-lg border border-secondary-200 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:bg-secondary-800 dark:border-secondary-700 dark:text-white"
+                    >
+                      {topics.map((topic) => (
+                        <option key={topic.id} value={topic.id}>
+                          {topic.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* New field for initial action */}
+                  <div className="mb-6">
+                    <label
+                      className="block text-secondary-700 dark:text-secondary-300 mb-2"
+                      htmlFor="initialAction"
+                    >
+                      First Action (Optional)
+                    </label>
+                    <input
+                      id="initialAction"
+                      type="text"
+                      value={initialAction}
+                      onChange={(e) => setInitialAction(e.target.value)}
+                      className="w-full px-4 py-2 rounded-lg border border-secondary-200 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:bg-secondary-800 dark:border-secondary-700 dark:text-white"
+                      placeholder="First action for this thread"
+                    />
+                    <p className="mt-1 text-xs text-secondary-500 dark:text-secondary-400">
+                      Create your first sequential action for this thread
+                    </p>
+                  </div>
+
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => navigateTo("home")}
+                      className="px-4 py-2 mr-2 rounded-lg bg-secondary-100 text-secondary-700 hover:bg-secondary-200 focus:outline-none focus:ring-2 focus:ring-secondary-500 dark:bg-secondary-700 dark:text-secondary-300 dark:hover:bg-secondary-600"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-4 py-2 rounded-lg bg-primary-500 text-white hover:bg-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
+                    >
+                      Create Thread
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
+          </div>
+        );
+      }
+      // Actions list component
+      function ActionsList({ db, navigateTo }) {
+        const [actions, setActions] = React.useState([]);
+        const [loading, setLoading] = React.useState(true);
+        const [filter, setFilter] = React.useState("pending"); // pending, completed, all
+        const [topics, setTopics] = React.useState([]);
+        const [threads, setThreads] = React.useState([]);
+
+        React.useEffect(() => {
+          async function loadData() {
+            setLoading(true);
+
+            // Load topics
+            const allTopics = await db.getAll("topics");
+            setTopics(allTopics);
+
+            // Load threads
+            const allThreads = await db.getAll("threads");
+            setThreads(allThreads);
+
+            // Load actions based on filter
+            await loadActions(filter);
+
+            setLoading(false);
+          }
+
+          loadData();
+        }, [db, filter]);
+
+        async function loadActions(statusFilter) {
+          let actionsToLoad;
+
+          if (statusFilter === "all") {
+            actionsToLoad = await db.getAll("actions");
+          } else {
+            const index = db.transaction("actions").store.index("status");
+            actionsToLoad = await index.getAll(IDBKeyRange.only(statusFilter));
+
+            // If showing pending actions, only include next actions from threads
+            if (statusFilter === "pending") {
+              actionsToLoad = actionsToLoad.filter(
+                (action) => !action.threadId || action.isNextAction
+              );
+            }
+          }
+
+          setActions(actionsToLoad);
+        }
+
+        // Handle action status change
+        const handleActionStatusChange = async (actionId, newStatus) => {
+          const action = await db.get("actions", actionId);
+          const oldStatus = action.status;
+
+          // Update the action status
+          action.status = newStatus;
+          action.completedAt =
+            newStatus === "completed" ? new Date().toISOString() : null;
+          action.isNextAction = false;
+          await db.put("actions", action);
+
+          // If this was a thread action and marked as next action, find the next action in sequence
+          if (action.threadId && action.isNextAction) {
+            // Get all actions for this thread
+            const threadIndex = db
+              .transaction("actions")
+              .store.index("threadId");
+            const threadActions = await threadIndex.getAll(
+              IDBKeyRange.only(action.threadId)
+            );
+
+            // Find actions with higher sequence that are pending
+            const nextActions = threadActions.filter(
+              (a) => a.sequence > action.sequence && a.status === "pending"
+            );
+
+            if (nextActions.length > 0) {
+              // Get the action with the lowest sequence number
+              const nextAction = nextActions.sort(
+                (a, b) => a.sequence - b.sequence
+              )[0];
+              nextAction.isNextAction = true;
+              await db.put("actions", nextAction);
+            }
+          }
+
+          // Reload actions with the same filter
+          await loadActions(filter);
+        };
+
+        const getThreadInfo = (threadId) => {
+          return threads.find((t) => t.id === threadId) || null;
+        };
+
+        const getTopicInfo = (topicId) => {
+          return topics.find((t) => t.id === topicId) || null;
+        };
+
+        return (
+          <div className="max-w-4xl mx-auto px-4 py-6 animate-fade-in">
+            <div className="flex justify-between items-center mb-6">
+              <h1 className="text-2xl font-bold text-secondary-900 dark:text-secondary-100">
+                Actions
+              </h1>
+            </div>
+
+            {/* Filter tabs */}
+            <div className="flex border-b border-secondary-200 dark:border-secondary-700 mb-6">
+              <button
+                onClick={() => setFilter("pending")}
+                className={`px-4 py-2 -mb-px ${
+                  filter === "pending"
+                    ? "border-b-2 border-primary-500 text-primary-600 dark:text-primary-400"
+                    : "text-secondary-500 dark:text-secondary-400"
+                }`}
+              >
+                Pending
+              </button>
+              <button
+                onClick={() => setFilter("completed")}
+                className={`px-4 py-2 -mb-px ${
+                  filter === "completed"
+                    ? "border-b-2 border-primary-500 text-primary-600 dark:text-primary-400"
+                    : "text-secondary-500 dark:text-secondary-400"
+                }`}
+              >
+                Completed
+              </button>
+              <button
+                onClick={() => setFilter("all")}
+                className={`px-4 py-2 -mb-px ${
+                  filter === "all"
+                    ? "border-b-2 border-primary-500 text-primary-600 dark:text-primary-400"
+                    : "text-secondary-500 dark:text-secondary-400"
+                }`}
+              >
+                All
+              </button>
+            </div>
+
+            {loading ? (
+              <div className="flex justify-center py-8">
+                <div className="w-10 h-10 border-4 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
+              </div>
+            ) : actions.length > 0 ? (
+              <div className="space-y-4">
+                {actions.map((action) => {
+                  const thread = action.threadId
+                    ? getThreadInfo(action.threadId)
+                    : null;
+                  const topic = action.topicId
+                    ? getTopicInfo(action.topicId)
+                    : null;
+
+                  return (
+                    <div
+                      key={action.id}
+                      className={`bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-4 border-l-4 ${
+                        action.status === "completed"
+                          ? "border-accent-500"
+                          : action.status === "discarded"
+                          ? "border-red-500"
+                          : action.status === "delegated"
+                          ? "border-blue-500"
+                          : "border-secondary-300 dark:border-secondary-600"
+                      }`}
+                    >
+                      <div className="flex items-start">
+                        {action.status === "pending" && (
+                          <button
+                            onClick={() =>
+                              handleActionStatusChange(action.id, "completed")
+                            }
+                            className="w-6 h-6 rounded-full border-2 border-secondary-300 dark:border-secondary-500 hover:border-accent-500 dark:hover:border-accent-400 mr-3 flex-shrink-0 mt-1"
+                            aria-label="Mark as completed"
+                          ></button>
+                        )}
+
+                        <div className="flex-grow">
+                          <div className="flex flex-wrap items-center gap-2 mb-1">
+                            {thread && (
+                              <span
+                                onClick={() => navigateTo("thread", thread)}
+                                className="text-xs px-2 py-1 bg-secondary-100 dark:bg-secondary-700 rounded-full cursor-pointer hover:bg-secondary-200 dark:hover:bg-secondary-600"
+                              >
+                                Thread: {thread.title}
+                              </span>
+                            )}
+
+                            {topic && (
+                              <span
+                                className="text-xs px-2 py-1 rounded-full"
+                                style={{
+                                  backgroundColor: `${topic.color}20`,
+                                  color: topic.color,
+                                }}
+                              >
+                                {topic.name}
+                              </span>
+                            )}
+
+                            {action.isNextAction && action.threadId && (
+                              <span className="text-xs px-2 py-1 bg-primary-100 text-primary-800 dark:bg-primary-900 dark:text-primary-200 rounded-full">
+                                Next Action
+                              </span>
+                            )}
+
+                            {action.status !== "pending" && (
+                              <span
+                                className={`text-xs px-2 py-1 rounded-full ${
+                                  action.status === "completed"
+                                    ? "bg-accent-100 text-accent-800 dark:bg-accent-900 dark:text-accent-200"
+                                    : action.status === "discarded"
+                                    ? "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200"
+                                    : "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200"
+                                }`}
+                              >
+                                {action.status}
+                              </span>
+                            )}
+                          </div>
+
+                          <p
+                            className={`text-secondary-900 dark:text-secondary-100 ${
+                              action.status === "completed" ||
+                              action.status === "discarded"
+                                ? "line-through text-secondary-500 dark:text-secondary-400"
+                                : ""
+                            }`}
+                          >
+                            {action.text}
+                          </p>
+
+                          {action.completedAt && (
+                            <p className="mt-1 text-xs text-secondary-500 dark:text-secondary-400">
+                              {action.status} on{" "}
+                              {new Date(action.completedAt).toLocaleString()}
+                            </p>
+                          )}
+                        </div>
+
+                        {action.status === "pending" && (
+                          <div className="flex space-x-1 ml-2">
+                            <button
+                              onClick={() =>
+                                handleActionStatusChange(action.id, "delegated")
+                              }
+                              className="text-blue-500 hover:text-blue-600 dark:hover:text-blue-400 p-2"
+                              title="Delegate"
+                            >
+                              <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                className="h-5 w-5"
+                                fill="none"
+                                viewBox="0 0 24 24"
+                                stroke="currentColor"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M7 11.5V14m0-2.5v-6a1.5 1.5 0 113 0m-3 6a1.5 1.5 0 00-3 0v2a7.5 7.5 0 0015 0v-5a1.5 1.5 0 00-3 0m-6-3V11m0-5.5v-1a1.5 1.5 0 013 0v1m0 0V11m0-5.5a1.5 1.5 0 013 0v3m0 0V11"
+                                />
+                              </svg>
+                            </button>
+                            <button
+                              onClick={() =>
+                                handleActionStatusChange(action.id, "discarded")
+                              }
+                              className="text-red-500 hover:text-red-600 dark:hover:text-red-400 p-2"
+                              title="Discard"
+                            >
+                              <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                className="h-5 w-5"
+                                fill="none"
+                                viewBox="0 0 24 24"
+                                stroke="currentColor"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                                />
+                              </svg>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-6 text-center">
+                <p className="text-secondary-600 dark:text-secondary-400">
+                  No actions found with the current filter.
+                </p>
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      // Action generators component
+      function ActionGenerators({ db, navigateTo }) {
+        const [generators, setGenerators] = React.useState([]);
+        const [topics, setTopics] = React.useState([]);
+        const [loading, setLoading] = React.useState(true);
+        const [showModal, setShowModal] = React.useState(false);
+        const [editingGenerator, setEditingGenerator] = React.useState(null);
+
+        // Form state
+        const [text, setText] = React.useState("");
+        const [frequency, setFrequency] = React.useState("daily");
+        const [topicId, setTopicId] = React.useState(1);
+        const [dayOfWeek, setDayOfWeek] = React.useState(1);
+        const [dayOfMonth, setDayOfMonth] = React.useState(1);
+        const [customPattern, setCustomPattern] = React.useState("");
+
+        React.useEffect(() => {
+          loadData();
+        }, [db]);
+
+        async function loadData() {
+          setLoading(true);
+
+          // Load topics
+          const allTopics = await db.getAll("topics");
+          setTopics(allTopics);
+
+          // Load generators
+          const allGenerators = await db.getAll("actionGenerators");
+          setGenerators(allGenerators);
+
+          setLoading(false);
+        }
+
+        const openModal = (generator = null) => {
+          if (generator) {
+            setEditingGenerator(generator);
+            setText(generator.text);
+            setFrequency(generator.frequency);
+            setTopicId(generator.topicId);
+            setDayOfWeek(generator.dayOfWeek || 1);
+            setDayOfMonth(generator.dayOfMonth || 1);
+            setCustomPattern(generator.customPattern || "");
+          } else {
+            setEditingGenerator(null);
+            setText("");
+            setFrequency("daily");
+            setTopicId(1);
+            setDayOfWeek(1);
+            setDayOfMonth(1);
+            setCustomPattern("");
+          }
+
+          setShowModal(true);
+        };
+
+        const handleSaveGenerator = async () => {
+          if (!text.trim()) {
+            alert("Please enter text for the action");
+            return;
+          }
+
+          const generator = {
+            text,
+            frequency,
+            topicId: parseInt(topicId),
+            lastGenerated: null,
+          };
+
+          if (frequency === "weekly") {
+            generator.dayOfWeek = parseInt(dayOfWeek);
+          } else if (frequency === "monthly") {
+            generator.dayOfMonth = parseInt(dayOfMonth);
+          } else if (frequency === "custom") {
+            generator.customPattern = customPattern;
+          }
+
+          try {
+            if (editingGenerator) {
+              await db.put("actionGenerators", {
+                ...generator,
+                id: editingGenerator.id,
+              });
+            } else {
+              await db.add("actionGenerators", generator);
+            }
+
+            setShowModal(false);
+            await loadData();
+          } catch (error) {
+            console.error("Error saving generator:", error);
+            alert("Error saving generator. Please try again.");
+          }
+        };
+
+        const handleDeleteGenerator = async (id) => {
+          const confirmed = window.confirm(
+            "Are you sure you want to delete this generator?"
+          );
+
+          if (confirmed) {
+            try {
+              await db.delete("actionGenerators", id);
+              await loadData();
+            } catch (error) {
+              console.error("Error deleting generator:", error);
+              alert("Error deleting generator. Please try again.");
+            }
+          }
+        };
+
+        const handleRunGenerator = async (generator) => {
+          try {
+            // Create a new action from this generator
+            const action = {
+              text: generator.text,
+              status: "pending",
+              topicId: generator.topicId,
+              createdAt: new Date().toISOString(),
+              generatedFrom: generator.id,
+            };
+
+            await db.add("actions", action);
+
+            // Update last generated timestamp
+            generator.lastGenerated = new Date().toISOString();
+            await db.put("actionGenerators", generator);
+
+            await loadData();
+
+            alert("Action generated successfully!");
+          } catch (error) {
+            console.error("Error generating action:", error);
+            alert("Error generating action. Please try again.");
+          }
+        };
+
+        const getFrequencyDisplay = (generator) => {
+          switch (generator.frequency) {
+            case "daily":
+              return "Every day";
+            case "weekly":
+              return `Every week on ${getDayName(generator.dayOfWeek)}`;
+            case "monthly":
+              return `Monthly on day ${generator.dayOfMonth}`;
+            case "custom":
+              return `Custom: ${generator.customPattern}`;
+            default:
+              return generator.frequency;
+          }
+        };
+
+        const getDayName = (day) => {
+          const days = [
+            "Sunday",
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+          ];
+          return days[day % 7];
+        };
+
+        const renderFrequencyOptions = () => {
+          switch (frequency) {
+            case "weekly":
+              return (
+                <div>
+                  <label className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1">
+                    Day of Week
+                  </label>
+                  <select
+                    value={dayOfWeek}
+                    onChange={(e) => setDayOfWeek(e.target.value)}
+                    className="w-full px-4 py-2 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  >
+                    <option value="0">Sunday</option>
+                    <option value="1">Monday</option>
+                    <option value="2">Tuesday</option>
+                    <option value="3">Wednesday</option>
+                    <option value="4">Thursday</option>
+                    <option value="5">Friday</option>
+                    <option value="6">Saturday</option>
+                  </select>
+                </div>
+              );
+            case "monthly":
+              return (
+                <div>
+                  <label className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1">
+                    Day of Month
+                  </label>
+                  <select
+                    value={dayOfMonth}
+                    onChange={(e) => setDayOfMonth(e.target.value)}
+                    className="w-full px-4 py-2 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  >
+                    {Array.from({ length: 31 }, (_, i) => (
+                      <option key={i} value={i + 1}>
+                        {i + 1}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              );
+            case "custom":
+              return (
+                <div>
+                  <label className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1">
+                    Custom Pattern
+                  </label>
+                  <input
+                    type="text"
+                    value={customPattern}
+                    onChange={(e) => setCustomPattern(e.target.value)}
+                    className="w-full px-4 py-2 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    placeholder="e.g. First Monday of month"
+                  />
+                  <p className="mt-1 text-xs text-secondary-500 dark:text-secondary-400">
+                    Enter a human-readable description of your pattern
+                  </p>
+                </div>
+              );
+            default:
+              return null;
+          }
+        };
+
+        return (
+          <div className="max-w-7xl mx-auto px-4 py-6 animate-fade-in">
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-2xl font-bold text-secondary-900 dark:text-secondary-100">
+                Action Generators
+              </h2>
+              <button
+                onClick={() => openModal()}
+                className="flex items-center px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="h-5 w-5 mr-1"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M12 4v16m8-8H4"
+                  />
+                </svg>
+                New Generator
+              </button>
+            </div>
+
+            {loading ? (
+              <div className="flex justify-center py-8">
+                <div className="w-10 h-10 border-4 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
+              </div>
+            ) : generators.length > 0 ? (
+              <div className="space-y-4">
+                {generators.map((generator) => {
+                  const topic = topics.find(
+                    (t) => t.id === generator.topicId
+                  ) || { name: "Unknown", color: "#64748b" };
+
+                  return (
+                    <div
+                      key={generator.id}
+                      className="bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-5"
+                    >
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <h3 className="text-lg font-medium text-secondary-900 dark:text-secondary-100 mb-1">
+                            {generator.text}
+                          </h3>
+                          <div className="flex items-center text-sm text-secondary-600 dark:text-secondary-400 mb-3">
+                            <span
+                              className="px-2 py-1 text-xs rounded-full mr-2"
+                              style={{
+                                backgroundColor: `${topic.color}20`,
+                                color: topic.color,
+                              }}
+                            >
+                              {topic.name}
+                            </span>
+                            <span>{getFrequencyDisplay(generator)}</span>
+                          </div>
+
+                          {generator.lastGenerated && (
+                            <div className="text-xs text-secondary-500 dark:text-secondary-400">
+                              Last generated:{" "}
+                              {formatDate(generator.lastGenerated)}
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="flex space-x-2">
+                          <button
+                            onClick={() => handleRunGenerator(generator)}
+                            className="text-primary-600 hover:text-primary-800 dark:text-primary-400 dark:hover:text-primary-300 px-3 py-1 rounded border border-primary-200 dark:border-primary-700"
+                            title="Run Now"
+                          >
+                            Run Now
+                          </button>
+                          <button
+                            onClick={() => openModal(generator)}
+                            className="text-secondary-600 hover:text-secondary-800 dark:text-secondary-400 dark:hover:text-secondary-200 p-1"
+                            title="Edit"
+                          >
+                            <svg
+                              xmlns="http://www.w3.org/2000/svg"
+                              className="h-5 w-5"
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              stroke="currentColor"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth={2}
+                                d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                              />
+                            </svg>
+                          </button>
+                          <button
+                            onClick={() => handleDeleteGenerator(generator.id)}
+                            className="text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-300 p-1"
+                            title="Delete"
+                          >
+                            <svg
+                              xmlns="http://www.w3.org/2000/svg"
+                              className="h-5 w-5"
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              stroke="currentColor"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth={2}
+                                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                              />
+                            </svg>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-6 text-center">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="h-12 w-12 mx-auto text-secondary-400"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
+                  />
+                </svg>
+                <h3 className="mt-4 text-lg font-medium text-secondary-900 dark:text-secondary-100">
+                  No Action Generators
+                </h3>
+                <p className="mt-2 text-secondary-600 dark:text-secondary-400">
+                  Create a generator to automatically create recurring actions.
+                </p>
+                <button
+                  onClick={() => openModal()}
+                  className="mt-4 px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
+                >
+                  Create Your First Generator
+                </button>
+              </div>
+            )}
+
+            {/* Add/Edit Generator Modal */}
+            {showModal && (
+              <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+                <div className="bg-white dark:bg-secondary-800 rounded-lg shadow-lg p-6 w-full max-w-md">
+                  <h3 className="text-lg font-semibold text-secondary-900 dark:text-secondary-100 mb-4">
+                    {editingGenerator
+                      ? "Edit Action Generator"
+                      : "New Action Generator"}
+                  </h3>
+
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1">
+                        Action Text
+                      </label>
+                      <input
+                        type="text"
+                        value={text}
+                        onChange={(e) => setText(e.target.value)}
+                        className="w-full px-4 py-2 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                        placeholder="What action do you want to generate?"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1">
+                        Topic
+                      </label>
+                      <select
+                        value={topicId}
+                        onChange={(e) => setTopicId(e.target.value)}
+                        className="w-full px-4 py-2 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                      >
+                        {topics.map((topic) => (
+                          <option key={topic.id} value={topic.id}>
+                            {topic.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1">
+                        Frequency
+                      </label>
+                      <select
+                        value={frequency}
+                        onChange={(e) => setFrequency(e.target.value)}
+                        className="w-full px-4 py-2 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                      >
+                        <option value="daily">Daily</option>
+                        <option value="weekly">Weekly</option>
+                        <option value="monthly">Monthly</option>
+                        <option value="custom">Custom</option>
+                      </select>
+                    </div>
+
+                    {renderFrequencyOptions()}
+                  </div>
+
+                  <div className="flex justify-end space-x-3 mt-6">
+                    <button
+                      onClick={() => setShowModal(false)}
+                      className="px-4 py-2 text-secondary-700 dark:text-secondary-300 hover:bg-secondary-100 dark:hover:bg-secondary-700 rounded-lg"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleSaveGenerator}
+                      className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
+                    >
+                      {editingGenerator ? "Save Changes" : "Create Generator"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      // Reports & insights component
+      function Reports({ db }) {
+        const [topics, setTopics] = React.useState([]);
+        const [reportType, setReportType] = React.useState("daily");
+        const [reportDate, setReportDate] = React.useState(
+          new Date().toISOString().split("T")[0]
+        );
+        const [reportData, setReportData] = React.useState(null);
+        const [isLoading, setIsLoading] = React.useState(false);
+
+        React.useEffect(() => {
+          loadTopics();
+        }, [db]);
+
+        React.useEffect(() => {
+          if (reportDate) {
+            generateReport();
+          }
+        }, [reportType, reportDate, db]);
+
+        async function loadTopics() {
+          const allTopics = await db.getAll("topics");
+          setTopics(allTopics);
+        }
+
+        const getTopicName = (topicId) => {
+          const topic = topics.find((t) => t.id === topicId);
+          return topic ? topic.name : "Unknown";
+        };
+
+        async function generateReport() {
+          setIsLoading(true);
+
+          try {
+            // Calculate date range based on report type
+            const selectedDate = new Date(reportDate);
+            let startDate, endDate;
+
+            switch (reportType) {
+              case "daily":
+                startDate = new Date(selectedDate);
+                startDate.setHours(0, 0, 0, 0);
+                endDate = new Date(selectedDate);
+                endDate.setHours(23, 59, 59, 999);
+                break;
+
+              case "weekly":
+                // Start from the beginning of the week (Sunday)
+                startDate = new Date(selectedDate);
+                startDate.setDate(
+                  selectedDate.getDate() - selectedDate.getDay()
+                );
+                startDate.setHours(0, 0, 0, 0);
+
+                // End at the end of the week (Saturday)
+                endDate = new Date(startDate);
+                endDate.setDate(startDate.getDate() + 6);
+                endDate.setHours(23, 59, 59, 999);
+                break;
+
+              case "monthly":
+                startDate = new Date(
+                  selectedDate.getFullYear(),
+                  selectedDate.getMonth(),
+                  1
+                );
+                endDate = new Date(
+                  selectedDate.getFullYear(),
+                  selectedDate.getMonth() + 1,
+                  0,
+                  23,
+                  59,
+                  59,
+                  999
+                );
+                break;
+
+              case "yearly":
+                startDate = new Date(selectedDate.getFullYear(), 0, 1);
+                endDate = new Date(
+                  selectedDate.getFullYear(),
+                  11,
+                  31,
+                  23,
+                  59,
+                  59,
+                  999
+                );
+                break;
+            }
+
+            // Fetch all actions within the date range
+            const actionsInRange = await db.getAll("actions");
+            const filteredActions = actionsInRange.filter((action) => {
+              const actionDate = new Date(action.createdAt);
+              return actionDate >= startDate && actionDate <= endDate;
+            });
+
+            // Fetch all thread updates within the date range
+            const updatesInRange = await db.getAll("threadUpdates");
+            const filteredUpdates = updatesInRange.filter((update) => {
+              const updateDate = new Date(update.timestamp);
+              return updateDate >= startDate && updateDate <= endDate;
+            });
+
+            // Group actions by status
+            const actionsByStatus = {
+              pending: filteredActions.filter((a) => a.status === "pending"),
+              completed: filteredActions.filter(
+                (a) => a.status === "completed"
+              ),
+              delayed: filteredActions.filter((a) => a.status === "delayed"),
+              discarded: filteredActions.filter(
+                (a) => a.status === "discarded"
+              ),
+              delegated: filteredActions.filter(
+                (a) => a.status === "delegated"
+              ),
+            };
+
+            // Group actions by topic
+            const actionsByTopic = {};
+            for (const action of filteredActions) {
+              if (!actionsByTopic[action.topicId]) {
+                actionsByTopic[action.topicId] = [];
+              }
+              actionsByTopic[action.topicId].push(action);
+            }
+
+            // Fetch threads related to the updates
+            const threadIds = [
+              ...new Set(filteredUpdates.map((update) => update.threadId)),
+            ];
+            const threads = [];
+
+            for (const threadId of threadIds) {
+              const thread = await db.get("threads", threadId);
+              if (thread) {
+                threads.push(thread);
+              }
+            }
+
+            // Group updates by thread
+            const threadUpdatesMap = {};
+            for (const update of filteredUpdates) {
+              if (!threadUpdatesMap[update.threadId]) {
+                threadUpdatesMap[update.threadId] = [];
+              }
+              threadUpdatesMap[update.threadId].push(update);
+            }
+
+            // Calculate completion rate
+            const totalActionsWithStatus = filteredActions.length;
+            const completionRate =
+              totalActionsWithStatus === 0
+                ? 0
+                : Math.round(
+                    (actionsByStatus.completed.length /
+                      totalActionsWithStatus) *
+                      100
+                  );
+
+            setReportData({
+              startDate,
+              endDate,
+              totalActions: filteredActions.length,
+              totalThreadUpdates: filteredUpdates.length,
+              actionsByStatus,
+              actionsByTopic,
+              threadUpdatesMap,
+              threads,
+              completionRate,
+            });
+          } catch (error) {
+            console.error("Error generating report:", error);
+          }
+
+          setIsLoading(false);
+        }
+
+        function formatDate(dateString) {
+          const date = new Date(dateString);
+          return date.toLocaleDateString(undefined, {
+            year: "numeric",
+            month: "short",
+            day: "numeric",
+          });
+        }
+
+        function formatDateTime(dateString) {
+          const date = new Date(dateString);
+          return date.toLocaleDateString(undefined, {
+            year: "numeric",
+            month: "short",
+            day: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+          });
+        }
+
+        function formatDateRange(start, end) {
+          const startFormatted = formatDate(start);
+          const endFormatted = formatDate(end);
+
+          if (startFormatted === endFormatted) {
+            return startFormatted;
+          }
+
+          return `${startFormatted} - ${endFormatted}`;
+        }
+
+        return (
+          <div className="max-w-7xl mx-auto px-4 py-6 animate-fade-in">
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-2xl font-bold text-secondary-900 dark:text-secondary-100">
+                Reports & Insights
+              </h2>
+            </div>
+
+            <div className="bg-white dark:bg-secondary-800 rounded-xl shadow-sm p-4 mb-6">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label
+                    htmlFor="reportType"
+                    className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1"
+                  >
+                    Report Type
+                  </label>
+                  <select
+                    id="reportType"
+                    value={reportType}
+                    onChange={(e) => setReportType(e.target.value)}
+                    className="w-full px-4 py-2 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  >
+                    <option value="daily">Daily</option>
+                    <option value="weekly">Weekly</option>
+                    <option value="monthly">Monthly</option>
+                    <option value="yearly">Yearly</option>
+                  </select>
+                </div>
+                <div>
+                  <label
+                    htmlFor="reportDate"
+                    className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1"
+                  >
+                    Date
+                  </label>
+                  <input
+                    type="date"
+                    id="reportDate"
+                    value={reportDate}
+                    onChange={(e) => setReportDate(e.target.value)}
+                    className="w-full px-4 py-2 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {isLoading ? (
+              <div className="flex justify-center py-8">
+                <div className="w-10 h-10 border-4 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
+              </div>
+            ) : reportData ? (
+              <div className="space-y-6">
+                {/* Report header */}
+                <div className="bg-white dark:bg-secondary-800 rounded-xl shadow-sm p-6">
+                  <h3 className="text-lg font-semibold text-secondary-900 dark:text-secondary-100 mb-4">
+                    Summary for{" "}
+                    {reportType === "daily"
+                      ? "Day"
+                      : reportType === "weekly"
+                      ? "Week"
+                      : reportType === "monthly"
+                      ? "Month"
+                      : "Year"}
+                  </h3>
+                  <div className="text-sm text-secondary-600 dark:text-secondary-400 mb-4">
+                    {formatDateRange(reportData.startDate, reportData.endDate)}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-6 md:grid-cols-4">
+                    <div className="bg-secondary-50 dark:bg-secondary-700 rounded-lg p-4">
+                      <div className="text-sm text-secondary-500 dark:text-secondary-400">
+                        Thread Updates
+                      </div>
+                      <div className="text-2xl font-bold text-secondary-900 dark:text-secondary-100 mt-1">
+                        {reportData.totalThreadUpdates}
+                      </div>
+                    </div>
+                    <div className="bg-secondary-50 dark:bg-secondary-700 rounded-lg p-4">
+                      <div className="text-sm text-secondary-500 dark:text-secondary-400">
+                        Total Actions
+                      </div>
+                      <div className="text-2xl font-bold text-secondary-900 dark:text-secondary-100 mt-1">
+                        {reportData.totalActions}
+                      </div>
+                    </div>
+                    <div className="bg-secondary-50 dark:bg-secondary-700 rounded-lg p-4">
+                      <div className="text-sm text-secondary-500 dark:text-secondary-400">
+                        Completed Actions
+                      </div>
+                      <div className="text-2xl font-bold text-accent-600 dark:text-accent-400 mt-1">
+                        {reportData.actionsByStatus.completed.length}
+                      </div>
+                    </div>
+                    <div className="bg-secondary-50 dark:bg-secondary-700 rounded-lg p-4">
+                      <div className="text-sm text-secondary-500 dark:text-secondary-400">
+                        Completion Rate
+                      </div>
+                      <div className="text-2xl font-bold text-primary-600 dark:text-primary-400 mt-1">
+                        {reportData.completionRate}%
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Actions by status */}
+                <div className="bg-white dark:bg-secondary-800 rounded-xl shadow-sm p-6">
+                  <h3 className="text-lg font-semibold text-secondary-900 dark:text-secondary-100 mb-4">
+                    Actions by Status
+                  </h3>
+
+                  {reportData.totalActions === 0 ? (
+                    <div className="text-center py-4 text-secondary-500 dark:text-secondary-400">
+                      No actions found for this period
+                    </div>
+                  ) : (
+                    <>
+                      <div className="h-10 bg-secondary-100 dark:bg-secondary-700 rounded-lg overflow-hidden flex mb-4">
+                        {reportData.totalActions > 0 && (
+                          <>
+                            <div
+                              className="h-full bg-accent-500"
+                              style={{
+                                width: `${
+                                  (reportData.actionsByStatus.completed.length /
+                                    reportData.totalActions) *
+                                  100
+                                }%`,
+                              }}
+                              title={`Completed: ${reportData.actionsByStatus.completed.length}`}
+                            ></div>
+                            <div
+                              className="h-full bg-orange-500"
+                              style={{
+                                width: `${
+                                  (reportData.actionsByStatus.delayed.length /
+                                    reportData.totalActions) *
+                                  100
+                                }%`,
+                              }}
+                              title={`Delayed: ${reportData.actionsByStatus.delayed.length}`}
+                            ></div>
+                            <div
+                              className="h-full bg-red-500"
+                              style={{
+                                width: `${
+                                  (reportData.actionsByStatus.discarded.length /
+                                    reportData.totalActions) *
+                                  100
+                                }%`,
+                              }}
+                              title={`Discarded: ${reportData.actionsByStatus.discarded.length}`}
+                            ></div>
+                            <div
+                              className="h-full bg-blue-500"
+                              style={{
+                                width: `${
+                                  (reportData.actionsByStatus.delegated.length /
+                                    reportData.totalActions) *
+                                  100
+                                }%`,
+                              }}
+                              title={`Delegated: ${reportData.actionsByStatus.delegated.length}`}
+                            ></div>
+                            <div
+                              className="h-full bg-secondary-300 dark:bg-secondary-500"
+                              style={{
+                                width: `${
+                                  (reportData.actionsByStatus.pending.length /
+                                    reportData.totalActions) *
+                                  100
+                                }%`,
+                              }}
+                              title={`Pending: ${reportData.actionsByStatus.pending.length}`}
+                            ></div>
+                          </>
+                        )}
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 md:grid-cols-5 text-sm">
+                        <div className="flex items-center">
+                          <span className="w-3 h-3 bg-accent-500 rounded-full mr-2"></span>
+                          <span className="dark:text-secondary-300">
+                            Completed:{" "}
+                            {reportData.actionsByStatus.completed.length}
+                          </span>
+                        </div>
+                        <div className="flex items-center">
+                          <span className="w-3 h-3 bg-orange-500 rounded-full mr-2"></span>
+                          <span className="dark:text-secondary-300">
+                            Delayed: {reportData.actionsByStatus.delayed.length}
+                          </span>
+                        </div>
+                        <div className="flex items-center">
+                          <span className="w-3 h-3 bg-red-500 rounded-full mr-2"></span>
+                          <span className="dark:text-secondary-300">
+                            Discarded:{" "}
+                            {reportData.actionsByStatus.discarded.length}
+                          </span>
+                        </div>
+                        <div className="flex items-center">
+                          <span className="w-3 h-3 bg-blue-500 rounded-full mr-2"></span>
+                          <span className="dark:text-secondary-300">
+                            Delegated:{" "}
+                            {reportData.actionsByStatus.delegated.length}
+                          </span>
+                        </div>
+                        <div className="flex items-center">
+                          <span className="w-3 h-3 bg-secondary-300 dark:bg-secondary-500 rounded-full mr-2"></span>
+                          <span className="dark:text-secondary-300">
+                            Pending: {reportData.actionsByStatus.pending.length}
+                          </span>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                {/* Actions by topic */}
+                <div className="bg-white dark:bg-secondary-800 rounded-xl shadow-sm p-6">
+                  <h3 className="text-lg font-semibold text-secondary-900 dark:text-secondary-100 mb-4">
+                    Actions by Topic
+                  </h3>
+
+                  {Object.keys(reportData.actionsByTopic).length === 0 ? (
+                    <div className="text-center py-4 text-secondary-500 dark:text-secondary-400">
+                      No actions found for this period
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {Object.entries(reportData.actionsByTopic).map(
+                        ([topicId, actions]) => (
+                          <div
+                            key={topicId}
+                            className="border-b border-secondary-100 dark:border-secondary-700 pb-4 last:border-b-0 last:pb-0"
+                          >
+                            <div className="flex justify-between items-center mb-2">
+                              <h4 className="font-medium text-secondary-900 dark:text-secondary-100">
+                                {getTopicName(parseInt(topicId))}
+                              </h4>
+                              <span className="text-sm text-secondary-600 dark:text-secondary-400">
+                                {actions.length} actions
+                              </span>
+                            </div>
+                            <div className="text-sm">
+                              <div className="flex justify-between text-secondary-600 dark:text-secondary-400 mb-1">
+                                <span>Completed:</span>
+                                <span>
+                                  {
+                                    actions.filter(
+                                      (a) => a.status === "completed"
+                                    ).length
+                                  }
+                                </span>
+                              </div>
+                              <div className="h-2 bg-secondary-100 dark:bg-secondary-700 rounded-full overflow-hidden">
+                                <div
+                                  className="h-full bg-accent-500"
+                                  style={{
+                                    width: `${
+                                      (actions.filter(
+                                        (a) => a.status === "completed"
+                                      ).length /
+                                        actions.length) *
+                                      100
+                                    }%`,
+                                  }}
+                                ></div>
+                              </div>
+                            </div>
+                          </div>
+                        )
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Thread updates */}
+                <div className="bg-white dark:bg-secondary-800 rounded-xl shadow-sm p-6">
+                  <h3 className="text-lg font-semibold text-secondary-900 dark:text-secondary-100 mb-4">
+                    Thread Updates
+                  </h3>
+
+                  {reportData.totalThreadUpdates === 0 ? (
+                    <div className="text-center py-4 text-secondary-500 dark:text-secondary-400">
+                      No thread updates found for this period
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {Object.entries(reportData.threadUpdatesMap).map(
+                        ([threadId, updates]) => {
+                          const thread = reportData.threads.find(
+                            (t) => t.id === parseInt(threadId)
+                          );
+                          if (!thread) return null;
+
+                          return (
+                            <div
+                              key={threadId}
+                              className="border-b border-secondary-100 dark:border-secondary-700 pb-4 last:border-b-0 last:pb-0"
+                            >
+                              <div className="flex justify-between items-center mb-2">
+                                <h4 className="font-medium text-secondary-900 dark:text-secondary-100">
+                                  {thread.title}
+                                </h4>
+                                <span className="text-sm text-secondary-600 dark:text-secondary-400">
+                                  {updates.length} updates
+                                </span>
+                              </div>
+                              <div className="text-sm text-secondary-600 dark:text-secondary-400 mb-3">
+                                Latest update:{" "}
+                                {formatDateTime(updates[0].timestamp)}
+                              </div>
+                              <div className="text-sm text-secondary-800 dark:text-secondary-200 line-clamp-2">
+                                {updates[0].content}
+                              </div>
+                            </div>
+                          );
+                        }
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="bg-white dark:bg-secondary-800 rounded-xl shadow-sm p-6 text-center">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="h-12 w-12 mx-auto text-secondary-400"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"
+                  />
+                </svg>
+                <h3 className="mt-4 text-lg font-medium text-secondary-900 dark:text-secondary-100">
+                  No Report Data
+                </h3>
+                <p className="mt-2 text-secondary-600 dark:text-secondary-400">
+                  Select a date range to generate a report.
+                </p>
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      // Action detail component
+      function ActionDetail({ db, action, navigateTo }) {
+        const [topics, setTopics] = React.useState([]);
+        const [actionData, setActionData] = React.useState(action);
+        const [isEditing, setIsEditing] = React.useState(false);
+        const [editedText, setEditedText] = React.useState(action.text);
+        const [editedTopicId, setEditedTopicId] = React.useState(
+          action.topicId
+        );
+        const [editedDueDate, setEditedDueDate] = React.useState(
+          action.due ? new Date(action.due).toISOString().split("T")[0] : ""
+        );
+
+        React.useEffect(() => {
+          async function loadTopics() {
+            const allTopics = await db.getAll("topics");
+            setTopics(allTopics);
+          }
+
+          loadTopics();
+        }, [db]);
+
+        const handleStatusChange = async (newStatus) => {
+          try {
+            const updatedAction = {
+              ...actionData,
+              status: newStatus,
+              completedAt:
+                newStatus === "completed" ? new Date().toISOString() : null,
+            };
+
+            await db.put("actions", updatedAction);
+            setActionData(updatedAction);
+          } catch (error) {
+            console.error("Error updating action status:", error);
+            alert("Error updating action. Please try again.");
+          }
+        };
+
+        const handleSaveChanges = async () => {
+          try {
+            const updatedAction = {
+              ...actionData,
+              text: editedText,
+              topicId: parseInt(editedTopicId),
+              due: editedDueDate ? new Date(editedDueDate).toISOString() : null,
+            };
+
+            await db.put("actions", updatedAction);
+            setActionData(updatedAction);
+            setIsEditing(false);
+          } catch (error) {
+            console.error("Error updating action:", error);
+            alert("Error updating action. Please try again.");
+          }
+        };
+
+        const handleDelete = async () => {
+          const confirmed = window.confirm(
+            "Are you sure you want to delete this action?"
+          );
+
+          if (confirmed) {
+            try {
+              await db.delete("actions", actionData.id);
+              navigateTo("actions");
+            } catch (error) {
+              console.error("Error deleting action:", error);
+              alert("Error deleting action. Please try again.");
+            }
+          }
+        };
+
+        const getCurrentTopic = () => {
+          return (
+            topics.find((t) => t.id === actionData.topicId) || {
+              name: "Unknown",
+              color: "#64748b",
+            }
+          );
+        };
+
+        const topic = getCurrentTopic();
+
+        return (
+          <div className="max-w-7xl mx-auto px-4 py-6 animate-fade-in">
+            <div className="flex items-center mb-6">
+              <button
+                onClick={() => navigateTo("actions")}
+                className="mr-3 text-secondary-600 dark:text-secondary-400 hover:text-secondary-900 dark:hover:text-secondary-200"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="h-6 w-6"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M10 19l-7-7m0 0l7-7m-7 7h18"
+                  />
+                </svg>
+              </button>
+              <h2 className="text-xl font-bold text-secondary-900 dark:text-secondary-100">
+                Action Details
+              </h2>
+            </div>
+
+            <div className="bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-6 mb-6">
+              {isEditing ? (
+                <div className="space-y-4">
+                  <div>
+                    <label
+                      htmlFor="actionText"
+                      className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1"
+                    >
+                      Action Text
+                    </label>
+                    <textarea
+                      id="actionText"
+                      value={editedText}
+                      onChange={(e) => setEditedText(e.target.value)}
+                      className="w-full px-4 py-2 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                      rows="3"
+                    ></textarea>
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor="actionTopic"
+                      className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1"
+                    >
+                      Topic
+                    </label>
+                    <select
+                      id="actionTopic"
+                      value={editedTopicId}
+                      onChange={(e) => setEditedTopicId(e.target.value)}
+                      className="w-full px-4 py-2 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    >
+                      {topics.map((topic) => (
+                        <option key={topic.id} value={topic.id}>
+                          {topic.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor="actionDue"
+                      className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-1"
+                    >
+                      Due Date (Optional)
+                    </label>
+                    <input
+                      id="actionDue"
+                      type="date"
+                      value={editedDueDate}
+                      onChange={(e) => setEditedDueDate(e.target.value)}
+                      className="w-full px-4 py-2 rounded-lg border border-secondary-200 dark:border-secondary-700 dark:bg-secondary-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    />
+                  </div>
+
+                  <div className="flex justify-end space-x-3 mt-4">
+                    <button
+                      onClick={() => setIsEditing(false)}
+                      className="px-4 py-2 text-secondary-700 dark:text-secondary-300 hover:bg-secondary-100 dark:hover:bg-secondary-700 rounded-lg"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleSaveChanges}
+                      className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
+                    >
+                      Save Changes
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <div className="flex justify-between">
+                    <span
+                      className="px-3 py-1 text-sm rounded-full mb-4"
+                      style={{
+                        backgroundColor: `${topic.color}20`,
+                        color: topic.color,
+                      }}
+                    >
+                      {topic.name}
+                    </span>
+
+                    <div>
+                      <button
+                        onClick={() => setIsEditing(true)}
+                        className="text-secondary-500 hover:text-secondary-700 dark:text-secondary-400 dark:hover:text-secondary-200 p-2"
+                      >
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          className="h-5 w-5"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                          />
+                        </svg>
+                      </button>
+                      <button
+                        onClick={handleDelete}
+                        className="text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 p-2"
+                      >
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          className="h-5 w-5"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                          />
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+
+                  <p className="text-lg font-medium text-secondary-900 dark:text-secondary-100 mb-4 whitespace-pre-wrap">
+                    {actionData.text}
+                  </p>
+
+                  <div className="space-y-2 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-secondary-600 dark:text-secondary-400">
+                        Status:
+                      </span>
+                      <span
+                        className={`font-medium ${
+                          actionData.status === "completed"
+                            ? "text-accent-600 dark:text-accent-400"
+                            : actionData.status === "delayed"
+                            ? "text-orange-600 dark:text-orange-400"
+                            : actionData.status === "discarded"
+                            ? "text-red-600 dark:text-red-400"
+                            : actionData.status === "delegated"
+                            ? "text-blue-600 dark:text-blue-400"
+                            : "text-secondary-900 dark:text-secondary-100"
+                        }`}
+                      >
+                        {actionData.status.charAt(0).toUpperCase() +
+                          actionData.status.slice(1)}
+                      </span>
+                    </div>
+
+                    <div className="flex justify-between">
+                      <span className="text-secondary-600 dark:text-secondary-400">
+                        Created:
+                      </span>
+                      <span className="text-secondary-900 dark:text-secondary-100">
+                        {formatDate(actionData.createdAt)}
+                      </span>
+                    </div>
+
+                    {actionData.completedAt && (
+                      <div className="flex justify-between">
+                        <span className="text-secondary-600 dark:text-secondary-400">
+                          Completed:
+                        </span>
+                        <span className="text-secondary-900 dark:text-secondary-100">
+                          {formatDate(actionData.completedAt)}
+                        </span>
+                      </div>
+                    )}
+
+                    {actionData.due && (
+                      <div className="flex justify-between">
+                        <span className="text-secondary-600 dark:text-secondary-400">
+                          Due:
+                        </span>
+                        <span className="text-secondary-900 dark:text-secondary-100">
+                          {formatDate(actionData.due)}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  {actionData.status === "pending" && (
+                    <div className="mt-6 grid grid-cols-2 gap-3">
+                      <button
+                        onClick={() => handleStatusChange("completed")}
+                        className="px-4 py-3 bg-accent-500 text-white rounded-lg hover:bg-accent-600 focus:outline-none focus:ring-2 focus:ring-accent-500 focus:ring-offset-2"
+                      >
+                        Mark Complete
+                      </button>
+                      <button
+                        onClick={() => handleStatusChange("delayed")}
+                        className="px-4 py-3 bg-orange-500 text-white rounded-lg hover:bg-orange-600 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-offset-2"
+                      >
+                        Delay
+                      </button>
+                      <button
+                        onClick={() => handleStatusChange("delegated")}
+                        className="px-4 py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+                      >
+                        Delegate
+                      </button>
+                      <button
+                        onClick={() => handleStatusChange("discarded")}
+                        className="px-4 py-3 bg-red-500 text-white rounded-lg hover:bg-red-600 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2"
+                      >
+                        Discard
+                      </button>
+                    </div>
+                  )}
+
+                  {actionData.status !== "pending" && (
+                    <div className="mt-6">
+                      <button
+                        onClick={() => handleStatusChange("pending")}
+                        className="w-full px-4 py-3 bg-secondary-500 text-white rounded-lg hover:bg-secondary-600 focus:outline-none focus:ring-2 focus:ring-secondary-500 focus:ring-offset-2"
+                      >
+                        Reopen Action
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      }
+
+      // Render the app
+      const domContainer = document.getElementById("app");
+      const root = ReactDOM.createRoot(domContainer);
+      root.render(<App />);
+    </script>
+    <script>
+      // Service worker registration
+      if ("serviceWorker" in navigator) {
+        window.addEventListener("load", () => {
+          navigator.serviceWorker
+            .register("/service-worker.js")
+            .then((registration) => {
+              console.log("ServiceWorker registration successful");
+            })
+            .catch((error) => {
+              console.log("ServiceWorker registration failed:", error);
+            });
+        });
+      }
+    </script>
+  </body>
+</html>
