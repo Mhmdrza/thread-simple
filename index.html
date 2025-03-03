@@ -14,6 +14,19 @@
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/idb/7.0.2/idb.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
+    <meta
+      name="description"
+      content="A tool for organizing thoughts and actions"
+    />
+    <meta name="theme-color" content="#4f46e5" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta
+      name="apple-mobile-web-app-status-bar-style"
+      content="black-translucent"
+    />
+    <meta name="apple-mobile-web-app-title" content="Thinking Tool" />
+    <link rel="manifest" href="manifest.json" />
+    <link rel="apple-touch-icon" href="icon-192x192.png" />
     <script>
       tailwind.config = {
         theme: {
@@ -3278,6 +3291,21 @@
       const domContainer = document.getElementById("app");
       const root = ReactDOM.createRoot(domContainer);
       root.render(<App />);
+    </script>
+    <script>
+      // Service worker registration
+      if ("serviceWorker" in navigator) {
+        window.addEventListener("load", () => {
+          navigator.serviceWorker
+            .register("/service-worker.js")
+            .then((registration) => {
+              console.log("ServiceWorker registration successful");
+            })
+            .catch((error) => {
+              console.log("ServiceWorker registration failed:", error);
+            });
+        });
+      }
     </script>
   </body>
 </html>

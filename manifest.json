@@ -1,0 +1,41 @@
+{
+    "name": "Thinking Tool",
+    "short_name": "Thinking",
+    "description": "A tool for organizing thoughts and actions",
+    "start_url": "/",
+    "display": "standalone",
+    "background_color": "#ffffff",
+    "theme_color": "#4f46e5",
+    "orientation": "portrait",
+    "icons": [
+      {
+        "src": "icon-192x192.png",
+        "sizes": "192x192",
+        "type": "image/png",
+        "purpose": "any maskable"
+      },
+      {
+        "src": "icon-512x512.png",
+        "sizes": "512x512",
+        "type": "image/png"
+      }
+    ],
+    "shortcuts": [
+      {
+        "name": "Actions",
+        "url": "/?view=actions",
+        "icons": [{ "src": "action-icon.png", "sizes": "96x96" }]
+      },
+      {
+        "name": "Thoughts",
+        "url": "/?view=thoughts",
+        "icons": [{ "src": "thought-icon.png", "sizes": "96x96" }]
+      }
+    ],
+    "related_applications": [
+      {
+        "platform": "webapp",
+        "url": "https://yourdomain.com/manifest.json"
+      }
+    ]
+  }
