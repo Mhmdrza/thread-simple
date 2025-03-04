@@ -152,104 +152,525 @@
     <div id="app"></div>
 
     <script type="text/babel">
-      // Database setup
+      // Database configuration
       const DB_NAME = "mindflow_db";
       const DB_VERSION = 1;
 
+      // Database initialization with robust error handling
       async function initDB() {
-        return idb.openDB(DB_NAME, DB_VERSION, {
-          upgrade(db) {
-            // Topics store
-            if (!db.objectStoreNames.contains("topics")) {
-              const topicsStore = db.createObjectStore("topics", {
-                keyPath: "id",
-                autoIncrement: true,
-              });
-              topicsStore.createIndex("name", "name", { unique: true });
+        try {
+          return await idb.openDB(DB_NAME, DB_VERSION, {
+            upgrade(db) {
+              // Topics store
+              if (!db.objectStoreNames.contains("topics")) {
+                const topicsStore = db.createObjectStore("topics", {
+                  keyPath: "id",
+                  autoIncrement: true,
+                });
+                topicsStore.createIndex("name", "name", { unique: true });
 
-              // Add default topics
-              topicsStore.add({ id: 1, name: "All", color: "#0ea5e9" });
-              topicsStore.add({ id: 2, name: "Personal", color: "#22c55e" });
-              topicsStore.add({ id: 3, name: "Work", color: "#f97316" });
-              topicsStore.add({ id: 4, name: "Ideas", color: "#8b5cf6" });
-            }
+                // Add default topics
+                topicsStore.add({ id: 1, name: "All", color: "#0ea5e9" });
+                topicsStore.add({ id: 2, name: "Personal", color: "#22c55e" });
+                topicsStore.add({ id: 3, name: "Work", color: "#f97316" });
+                topicsStore.add({ id: 4, name: "Ideas", color: "#8b5cf6" });
+              }
 
-            // Threads store
-            if (!db.objectStoreNames.contains("threads")) {
-              const threadsStore = db.createObjectStore("threads", {
-                keyPath: "id",
-                autoIncrement: true,
-              });
-              threadsStore.createIndex("topicId", "topicId");
-              threadsStore.createIndex("createdAt", "createdAt");
-              threadsStore.createIndex("state", "state");
-            }
+              // Threads store
+              if (!db.objectStoreNames.contains("threads")) {
+                const threadsStore = db.createObjectStore("threads", {
+                  keyPath: "id",
+                  autoIncrement: true,
+                });
+                threadsStore.createIndex("topicId", "topicId");
+                threadsStore.createIndex("createdAt", "createdAt");
+                threadsStore.createIndex("state", "state");
+              }
 
-            // Thread updates store
-            if (!db.objectStoreNames.contains("threadUpdates")) {
-              const updatesStore = db.createObjectStore("threadUpdates", {
-                keyPath: "id",
-                autoIncrement: true,
-              });
-              updatesStore.createIndex("threadId", "threadId");
-              updatesStore.createIndex("timestamp", "timestamp");
-            }
+              // Thread updates store
+              if (!db.objectStoreNames.contains("threadUpdates")) {
+                const updatesStore = db.createObjectStore("threadUpdates", {
+                  keyPath: "id",
+                  autoIncrement: true,
+                });
+                updatesStore.createIndex("threadId", "threadId");
+                updatesStore.createIndex("timestamp", "timestamp");
+              }
 
-            // Actions store
-            if (!db.objectStoreNames.contains("actions")) {
-              const actionsStore = db.createObjectStore("actions", {
-                keyPath: "id",
-                autoIncrement: true,
-              });
-              actionsStore.createIndex("threadId", "threadId");
-              actionsStore.createIndex("topicId", "topicId");
-              actionsStore.createIndex("status", "status");
-              actionsStore.createIndex("due", "due");
-              actionsStore.createIndex("createdAt", "createdAt");
-              actionsStore.createIndex("sequence", "sequence"); // Add sequence index
-              actionsStore.createIndex("isNextAction", "isNextAction"); // Flag for first action in sequence
-            }
+              // Actions store
+              if (!db.objectStoreNames.contains("actions")) {
+                const actionsStore = db.createObjectStore("actions", {
+                  keyPath: "id",
+                  autoIncrement: true,
+                });
+                actionsStore.createIndex("threadId", "threadId");
+                actionsStore.createIndex("topicId", "topicId");
+                actionsStore.createIndex("status", "status");
+                actionsStore.createIndex("due", "due");
+                actionsStore.createIndex("createdAt", "createdAt");
+                actionsStore.createIndex("sequence", "sequence");
+                actionsStore.createIndex("isNextAction", "isNextAction");
+              }
 
-            // Action history store for undo functionality
-            if (!db.objectStoreNames.contains("actionHistory")) {
-              const historyStore = db.createObjectStore("actionHistory", {
-                keyPath: "id",
-                autoIncrement: true,
-              });
-              historyStore.createIndex("actionId", "actionId");
-              historyStore.createIndex("timestamp", "timestamp");
-              historyStore.createIndex("type", "type");
-            }
+              // Action history store for undo functionality
+              if (!db.objectStoreNames.contains("actionHistory")) {
+                const historyStore = db.createObjectStore("actionHistory", {
+                  keyPath: "id",
+                  autoIncrement: true,
+                });
+                historyStore.createIndex("actionId", "actionId");
+                historyStore.createIndex("timestamp", "timestamp");
+                historyStore.createIndex("type", "type");
+              }
 
-            // Thread history store for undo functionality
-            if (!db.objectStoreNames.contains("threadHistory")) {
-              const historyStore = db.createObjectStore("threadHistory", {
-                keyPath: "id",
-                autoIncrement: true,
-              });
-              historyStore.createIndex("threadId", "threadId");
-              historyStore.createIndex("timestamp", "timestamp");
-              historyStore.createIndex("type", "type");
-            }
+              // Thread history store for undo functionality
+              if (!db.objectStoreNames.contains("threadHistory")) {
+                const historyStore = db.createObjectStore("threadHistory", {
+                  keyPath: "id",
+                  autoIncrement: true,
+                });
+                historyStore.createIndex("threadId", "threadId");
+                historyStore.createIndex("timestamp", "timestamp");
+                historyStore.createIndex("type", "type");
+              }
 
-            // Action generators store
-            if (!db.objectStoreNames.contains("actionGenerators")) {
-              const generatorsStore = db.createObjectStore("actionGenerators", {
-                keyPath: "id",
-                autoIncrement: true,
-              });
-              generatorsStore.createIndex("topicId", "topicId");
-              generatorsStore.createIndex("frequency", "frequency");
-            }
-          },
-        });
+              // Action generators store
+              if (!db.objectStoreNames.contains("actionGenerators")) {
+                const generatorsStore = db.createObjectStore(
+                  "actionGenerators",
+                  {
+                    keyPath: "id",
+                    autoIncrement: true,
+                  }
+                );
+                generatorsStore.createIndex("topicId", "topicId");
+                generatorsStore.createIndex("frequency", "frequency");
+              }
+            },
+          });
+        } catch (error) {
+          console.error("Database initialization failed:", error);
+          throw error;
+        }
       }
 
+      // Error boundary component for catching rendering errors
+      class ErrorBoundary extends React.Component {
+        constructor(props) {
+          super(props);
+          this.state = { hasError: false, error: null };
+        }
+
+        static getDerivedStateFromError(error) {
+          return { hasError: true, error };
+        }
+
+        componentDidCatch(error, errorInfo) {
+          console.error("Component error:", error, errorInfo);
+        }
+
+        render() {
+          if (this.state.hasError) {
+            return (
+              <div className="p-4 bg-red-50 dark:bg-red-900/20 border border-red-300 dark:border-red-800 rounded-lg my-4 mx-auto max-w-md">
+                <h3 className="text-red-800 dark:text-red-400 text-lg font-medium mb-2">
+                  Something went wrong
+                </h3>
+                <p className="text-red-700 dark:text-red-300 mb-3">
+                  {this.state.error && this.state.error.toString()}
+                </p>
+                <button
+                  onClick={() =>
+                    this.setState({ hasError: false, error: null })
+                  }
+                  className="bg-red-600 text-white px-4 py-2 rounded-md hover:bg-red-700"
+                >
+                  Try again
+                </button>
+              </div>
+            );
+          }
+          return this.props.children;
+        }
+      }
+
+      // Database error modal component
+      function DatabaseErrorModal({ error, onReset, onExportData }) {
+        return (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 animate-fade-in">
+            <div className="bg-white dark:bg-secondary-800 rounded-lg shadow-xl max-w-md w-full p-6 mx-4">
+              <div className="flex items-center mb-4 text-red-600 dark:text-red-400">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="h-8 w-8 mr-3"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+                  />
+                </svg>
+                <h2 className="text-xl font-bold">Database Error</h2>
+              </div>
+
+              <p className="text-secondary-700 dark:text-secondary-300 mb-6">
+                {error
+                  ? `Error: ${error.message || String(error)}`
+                  : "There was an error accessing the database."}
+                <br />
+                <br />
+                This could be due to a browser update, storage limits, or
+                corrupted data. You can try to:
+              </p>
+
+              <div className="space-y-3">
+                <button
+                  onClick={onReset}
+                  className="w-full py-2 px-4 bg-red-600 hover:bg-red-700 text-white rounded-md flex items-center justify-center"
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    className="h-5 w-5 mr-2"
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                  >
+                    <path
+                      fillRule="evenodd"
+                      d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z"
+                      clipRule="evenodd"
+                    />
+                  </svg>
+                  Reset Database
+                </button>
+
+                <button
+                  onClick={onExportData}
+                  className="w-full py-2 px-4 bg-primary-600 hover:bg-primary-700 text-white rounded-md flex items-center justify-center"
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    className="h-5 w-5 mr-2"
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                  >
+                    <path
+                      fillRule="evenodd"
+                      d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z"
+                      clipRule="evenodd"
+                    />
+                  </svg>
+                  Try to Export Data
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      // Function to reset the database
+      async function resetDatabase() {
+        try {
+          const db = await indexedDB.deleteDatabase(DB_NAME);
+          return true;
+        } catch (error) {
+          console.error("Error resetting database:", error);
+          return false;
+        }
+      }
+
+      // Function to export database to file
+      async function exportDatabase(db) {
+        try {
+          const exportData = {
+            topics: await db.getAll("topics"),
+            threads: await db.getAll("threads"),
+            threadUpdates: await db.getAll("threadUpdates"),
+            actions: await db.getAll("actions"),
+            actionGenerators: await db.getAll("actionGenerators"),
+            version: DB_VERSION,
+            exportDate: new Date().toISOString(),
+          };
+
+          // Convert to JSON string
+          const jsonString = JSON.stringify(exportData, null, 2);
+
+          // Create file for download
+          const blob = new Blob([jsonString], { type: "application/json" });
+          const url = URL.createObjectURL(blob);
+
+          // Create download link and trigger download
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = `mindflow_backup_${
+            new Date().toISOString().split("T")[0]
+          }.json`;
+          document.body.appendChild(a);
+          a.click();
+
+          // Clean up
+          setTimeout(() => {
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+          }, 100);
+
+          return true;
+        } catch (error) {
+          console.error("Error exporting database:", error);
+          return false;
+        }
+      }
+
+      // Function to import database from file
+      async function importDatabase(jsonData) {
+        try {
+          const data = JSON.parse(jsonData);
+
+          // Validate the imported data structure
+          if (!data.topics || !data.threads || !data.actions) {
+            throw new Error("Invalid backup file format");
+          }
+
+          // Delete the existing database
+          await indexedDB.deleteDatabase(DB_NAME);
+
+          // Open a new database
+          const db = await initDB();
+
+          // Import data transaction
+          const tx = db.transaction(
+            [
+              "topics",
+              "threads",
+              "threadUpdates",
+              "actions",
+              "actionGenerators",
+            ],
+            "readwrite"
+          );
+
+          // Import each collection
+          for (const topic of data.topics) {
+            await tx.objectStore("topics").add(topic);
+          }
+
+          for (const thread of data.threads) {
+            await tx.objectStore("threads").add(thread);
+          }
+
+          if (data.threadUpdates) {
+            for (const update of data.threadUpdates) {
+              await tx.objectStore("threadUpdates").add(update);
+            }
+          }
+
+          for (const action of data.actions) {
+            await tx.objectStore("actions").add(action);
+          }
+
+          if (data.actionGenerators) {
+            for (const generator of data.actionGenerators) {
+              await tx.objectStore("actionGenerators").add(generator);
+            }
+          }
+
+          // Complete the transaction
+          await tx.done;
+
+          return true;
+        } catch (error) {
+          console.error("Error importing database:", error);
+          throw error;
+        }
+      }
+      // Import File Modal Component
+      function ImportModal({ isOpen, onClose, onImport }) {
+        const [file, setFile] = React.useState(null);
+        const [error, setError] = React.useState(null);
+        const fileInputRef = React.useRef(null);
+
+        const handleFileChange = (e) => {
+          if (e.target.files.length > 0) {
+            setFile(e.target.files[0]);
+            setError(null);
+          }
+        };
+
+        const handleImport = () => {
+          if (!file) {
+            setError("Please select a file");
+            return;
+          }
+
+          const reader = new FileReader();
+          reader.onload = async (e) => {
+            try {
+              await onImport(e.target.result);
+              onClose();
+            } catch (err) {
+              setError(`Import failed: ${err.message}`);
+            }
+          };
+          reader.onerror = () => {
+            setError("Failed to read the file");
+          };
+          reader.readAsText(file);
+        };
+
+        if (!isOpen) return null;
+
+        return (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 animate-fade-in">
+            <div className="bg-white dark:bg-secondary-800 rounded-lg shadow-xl max-w-md w-full p-6 mx-4">
+              <h2 className="text-xl font-bold mb-4 text-secondary-900 dark:text-secondary-100">
+                Import Data
+              </h2>
+
+              <p className="text-secondary-700 dark:text-secondary-300 mb-4">
+                Select a MindFlow backup file to restore your data. This will
+                replace your current data.
+              </p>
+
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-secondary-700 dark:text-secondary-300 mb-2">
+                  Backup File
+                </label>
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  onChange={handleFileChange}
+                  accept=".json"
+                  className="block w-full text-sm text-secondary-700 dark:text-secondary-300
+              file:mr-4 file:py-2 file:px-4
+              file:rounded-md file:border-0
+              file:text-sm file:font-medium
+              file:bg-primary-50 file:text-primary-700
+              dark:file:bg-primary-900/30 dark:file:text-primary-400
+              hover:file:bg-primary-100 dark:hover:file:bg-primary-900/40"
+                />
+              </div>
+
+              {error && (
+                <div className="mb-4 p-3 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400 rounded-md text-sm">
+                  {error}
+                </div>
+              )}
+
+              <div className="flex justify-end space-x-3">
+                <button
+                  onClick={onClose}
+                  className="py-2 px-4 rounded-md border border-secondary-300 dark:border-secondary-600 text-secondary-700 dark:text-secondary-300 hover:bg-secondary-50 dark:hover:bg-secondary-700"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleImport}
+                  className="py-2 px-4 bg-primary-600 hover:bg-primary-700 text-white rounded-md"
+                >
+                  Import
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      // Export/Import buttons component for settings
+      function DataManagementSection({ db, showToast }) {
+        const [importModalOpen, setImportModalOpen] = React.useState(false);
+
+        const handleExport = async () => {
+          const success = await exportDatabase(db);
+          if (success) {
+            showToast("Data exported successfully", "success");
+          } else {
+            showToast("Failed to export data", "error");
+          }
+        };
+
+        const handleImport = async (fileData) => {
+          try {
+            await importDatabase(fileData);
+            showToast(
+              "Data imported successfully. Reloading app...",
+              "success"
+            );
+            // Give time for the toast to show before reload
+            setTimeout(() => window.location.reload(), 2000);
+            return true;
+          } catch (error) {
+            showToast(`Import failed: ${error.message}`, "error");
+            throw error;
+          }
+        };
+
+        return (
+          <div className="bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-6 mb-6 mt-6">
+            <h3 className="text-lg font-semibold text-secondary-900 dark:text-secondary-100 mb-3">
+              Data Management
+            </h3>
+
+            <p className="text-secondary-600 dark:text-secondary-400 mb-4">
+              Export your data for backup or transfer to another device, or
+              import a previously exported backup file.
+            </p>
+
+            <div className="flex flex-col sm:flex-row gap-3">
+              <button
+                onClick={handleExport}
+                className="flex items-center justify-center py-2 px-4 bg-primary-600 hover:bg-primary-700 text-white rounded-md"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="h-5 w-5 mr-2"
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                >
+                  <path
+                    fillRule="evenodd"
+                    d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z"
+                    clipRule="evenodd"
+                  />
+                </svg>
+                Export Data
+              </button>
+
+              <button
+                onClick={() => setImportModalOpen(true)}
+                className="flex items-center justify-center py-2 px-4 bg-secondary-600 hover:bg-secondary-700 text-white rounded-md"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="h-5 w-5 mr-2"
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                >
+                  <path
+                    fillRule="evenodd"
+                    d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.707-9.293a1 1 0 00-1.414 0L4 9V3a1 1 0 00-2 0v6a1 1 0 00.293.707l3 3a1 1 0 001.414 0l3-3A1 1 0 008.414 7.707L7 9.586V3a1 1 0 10-2 0v6.586l-1.293-1.293z"
+                    clipRule="evenodd"
+                  />
+                </svg>
+                Import Data
+              </button>
+            </div>
+
+            <ImportModal
+              isOpen={importModalOpen}
+              onClose={() => setImportModalOpen(false)}
+              onImport={handleImport}
+            />
+          </div>
+        );
+      }
       // Toast notification component
       function Toast({ message, type, onDismiss, closeToast }) {
         React.useEffect(() => {
           const timer = setTimeout(() => {
-            closeToast()
+            closeToast();
           }, 5000);
 
           return () => clearTimeout(timer);
@@ -340,8 +761,10 @@
       }
 
       // React component for the entire app
+      // Main App component with improved error handling
       function App() {
         const [db, setDb] = React.useState(null);
+        const [dbError, setDbError] = React.useState(null);
         const [view, setView] = React.useState("home");
         const [currentThread, setCurrentThread] = React.useState(null);
         const [currentAction, setCurrentAction] = React.useState(null);
@@ -351,13 +774,70 @@
 
         React.useEffect(() => {
           async function setupDb() {
-            const database = await initDB();
-            setDb(database);
+            try {
+              const database = await initDB();
+              // Verify database is functional with a test read
+              await database.count("topics");
+              setDb(database);
+              setDbError(null);
+            } catch (error) {
+              console.error("Database initialization failed:", error);
+              setDbError(error);
+            }
           }
           setupDb();
         }, []);
 
+        // Function to handle database reset
+        const handleResetDatabase = async () => {
+          try {
+            await resetDatabase();
+            showToast("Database reset. Reloading app...", "success");
+            setTimeout(() => window.location.reload(), 1500);
+          } catch (error) {
+            console.error("Failed to reset database:", error);
+            showToast("Failed to reset database", "error");
+          }
+        };
+
+        // Function to attempt data export from corrupted DB
+        const handleEmergencyExport = async () => {
+          try {
+            // Try to open the database with a lower version to access any available data
+            const oldDb = await idb.openDB(DB_NAME, DB_VERSION - 1, {
+              upgrade(db) {
+                // No schema changes, just trying to access existing data
+              },
+            });
+
+            await exportDatabase(oldDb);
+            showToast(
+              "Emergency data export completed. You can now reset the database.",
+              "success"
+            );
+          } catch (error) {
+            console.error("Emergency export failed:", error);
+            showToast(
+              "Failed to export data. You may need to reset the database.",
+              "error"
+            );
+          }
+        };
+
+        // Loading screen with potential database error recovery
         if (!db) {
+          if (dbError) {
+            return (
+              <div className="flex flex-col h-screen items-center justify-center p-4">
+                <DatabaseErrorModal
+                  error={dbError}
+                  onReset={handleResetDatabase}
+                  onExportData={handleEmergencyExport}
+                />
+              </div>
+            );
+          }
+
           return (
             <div className="flex h-screen items-center justify-center">
               <div className="w-12 h-12 border-4 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
@@ -401,57 +881,91 @@
           switch (view) {
             case "home":
               return (
-                <Home
-                  db={db}
-                  navigateTo={navigateTo}
-                  selectedTopicId={selectedTopicId}
-                  setSelectedTopicId={setSelectedTopicId}
-                  showToast={showToast}
-                />
+                <ErrorBoundary>
+                  <Home
+                    db={db}
+                    navigateTo={navigateTo}
+                    selectedTopicId={selectedTopicId}
+                    setSelectedTopicId={setSelectedTopicId}
+                    showToast={showToast}
+                  />
+                </ErrorBoundary>
               );
             case "thread":
               return (
-                <ThreadDetail
-                  db={db}
-                  thread={currentThread}
-                  navigateTo={navigateTo}
-                  showToast={showToast}
-                />
+                <ErrorBoundary>
+                  <ThreadDetail
+                    db={db}
+                    thread={currentThread}
+                    navigateTo={navigateTo}
+                    showToast={showToast}
+                  />
+                </ErrorBoundary>
               );
             case "action":
               return (
-                <ActionDetail
-                  db={db}
-                  action={currentAction}
-                  navigateTo={navigateTo}
-                  showToast={showToast}
-                />
+                <ErrorBoundary>
+                  <ActionDetail
+                    db={db}
+                    action={currentAction}
+                    navigateTo={navigateTo}
+                    showToast={showToast}
+                  />
+                </ErrorBoundary>
               );
             case "newThread":
               return (
-                <NewThread
-                  db={db}
-                  navigateTo={navigateTo}
-                  defaultTopicId={selectedTopicId}
-                  showToast={showToast}
-                />
+                <ErrorBoundary>
+                  <NewThread
+                    db={db}
+                    navigateTo={navigateTo}
+                    defaultTopicId={selectedTopicId}
+                    showToast={showToast}
+                  />
+                </ErrorBoundary>
               );
             case "actions":
               return (
-                <ActionsList
-                  db={db}
-                  navigateTo={navigateTo}
-                  showToast={showToast}
-                />
+                <ErrorBoundary>
+                  <ActionsList
+                    db={db}
+                    navigateTo={navigateTo}
+                    showToast={showToast}
+                  />
+                </ErrorBoundary>
               );
             case "actionGenerators":
-              return <ActionGenerators db={db} navigateTo={navigateTo} />;
+              return (
+                <ErrorBoundary>
+                  <ActionGenerators
+                    db={db}
+                    navigateTo={navigateTo}
+                    showToast={showToast}
+                  />
+                </ErrorBoundary>
+              );
             case "reports":
-              return <Reports db={db} />;
+              return (
+                <ErrorBoundary>
+                  <Reports db={db} />
+                </ErrorBoundary>
+              );
             case "topics":
-              return <TopicsManager db={db} navigateTo={navigateTo} />;
+              return (
+                <ErrorBoundary>
+                  <TopicsManager
+                    db={db}
+                    navigateTo={navigateTo}
+                    showToast={showToast}
+                  />
+                </ErrorBoundary>
+              );
             default:
-              return <Home db={db} navigateTo={navigateTo} />;
+              return (
+                <ErrorBoundary>
+                  <Home db={db} navigateTo={navigateTo} showToast={showToast} />
+                </ErrorBoundary>
+              );
           }
         };
 
@@ -470,7 +984,6 @@
           </div>
         );
       }
-
       // Bottom navigation component
       function BottomNav({ currentView, navigateTo }) {
         return (
@@ -1725,6 +2238,7 @@
           </div>
         );
       } // Topics Manager component
+      // Modified Topics Manager component to include data management section
       function TopicsManager({ db, navigateTo, showToast }) {
         const [topics, setTopics] = React.useState([]);
         const [loading, setLoading] = React.useState(true);
@@ -1743,19 +2257,26 @@
           "#06b6d4", // cyan
           "#ec4899", // pink
         ];
+        const [newTopic, setNewTopic] = React.useState({
+          name: "",
+          color: "#0ea5e9",
+        });
 
         React.useEffect(() => {
           async function loadTopics() {
-            setLoading(true);
-            const allTopics = await db.getAll("topics");
-            // Filter out the "All" topic with id 1
-            const filteredTopics = allTopics.filter((t) => t.id !== 1);
-            setTopics(filteredTopics);
-            setLoading(false);
+            try {
+              setLoading(true);
+              const allTopics = await db.getAll("topics");
+              setTopics(allTopics);
+              setLoading(false);
+            } catch (error) {
+              console.error("Failed to load topics:", error);
+              showToast("Failed to load topics", "error");
+            }
           }
           loadTopics();
         }, [db]);
-
+        
         const handleNewTopic = async (e) => {
           e.preventDefault();
           if (!newTopicName.trim()) return;
@@ -1881,212 +2402,215 @@
           // Update state
           setTopics(topics.filter((t) => t.id !== topicId));
         };
-
         return (
           <div className="max-w-4xl mx-auto px-4 py-6 animate-fade-in">
             <h1 className="text-2xl font-bold text-secondary-900 dark:text-secondary-100 mb-6">
-              Manage Topics
+              Settings
             </h1>
 
-            {/* Create new topic form */}
-            <div className="mb-8 bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-6">
-              <h2 className="text-lg font-semibold text-secondary-900 dark:text-secondary-100 mb-4">
-                Create New Topic
+            <div className="mb-8">
+              <h2 className="text-lg font-semibold text-secondary-900 dark:text-secondary-100 mb-3">
+                Manage Topics
               </h2>
 
-              <form onSubmit={handleNewTopic}>
-                <div className="mb-4">
-                  <label
-                    className="block text-secondary-700 dark:text-secondary-300 mb-2"
-                    htmlFor="name"
-                  >
-                    Topic Name
-                  </label>
-                  <input
-                    id="name"
-                    type="text"
-                    value={newTopicName}
-                    onChange={(e) => setNewTopicName(e.target.value)}
-                    className="w-full px-4 py-2 rounded-lg border border-secondary-200 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:bg-secondary-800 dark:border-secondary-700 dark:text-white"
-                    placeholder="Enter topic name"
-                    required
-                  />
-                </div>
-
-                <div className="mb-6">
-                  <label className="block text-secondary-700 dark:text-secondary-300 mb-2">
-                    Topic Color
-                  </label>
-                  <div className="flex flex-wrap gap-2">
-                    {colorOptions.map((color) => (
-                      <button
-                        key={color}
-                        type="button"
-                        className={`w-8 h-8 rounded-full ${
-                          newTopicColor === color
-                            ? "ring-2 ring-offset-2 ring-secondary-900 dark:ring-secondary-100"
-                            : ""
-                        }`}
-                        style={{ backgroundColor: color }}
-                        onClick={() => setNewTopicColor(color)}
-                        aria-label={`Select ${color} color`}
-                      />
-                    ))}
+              {/* Rest of the existing TopicsManager component */}
+                <form onSubmit={handleNewTopic}>
+                  <div className="mb-4">
+                    <label
+                      className="block text-secondary-700 dark:text-secondary-300 mb-2"
+                      htmlFor="name"
+                    >
+                      Topic Name
+                    </label>
+                    <input
+                      id="name"
+                      type="text"
+                      value={newTopicName}
+                      onChange={(e) => setNewTopicName(e.target.value)}
+                      className="w-full px-4 py-2 rounded-lg border border-secondary-200 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:bg-secondary-800 dark:border-secondary-700 dark:text-white"
+                      placeholder="Enter topic name"
+                      required
+                    />
                   </div>
+
+                  <div className="mb-6">
+                    <label className="block text-secondary-700 dark:text-secondary-300 mb-2">
+                      Topic Color
+                    </label>
+                    <div className="flex flex-wrap gap-2">
+                      {colorOptions.map((color) => (
+                        <button
+                          key={color}
+                          type="button"
+                          className={`w-8 h-8 rounded-full ${
+                            newTopicColor === color
+                              ? "ring-2 ring-offset-2 ring-secondary-900 dark:ring-secondary-100"
+                              : ""
+                          }`}
+                          style={{ backgroundColor: color }}
+                          onClick={() => setNewTopicColor(color)}
+                          aria-label={`Select ${color} color`}
+                        />
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end">
+                    <button
+                      type="submit"
+                      className="px-4 py-2 rounded-lg bg-primary-500 text-white hover:bg-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
+                    >
+                      Create Topic
+                    </button>
+                  </div>
+                </form>
+
+              <h3 className="text-lg font-semibold text-secondary-900 dark:text-secondary-100 mb-3">
+                Your Topics
+              </h3>
+
+              {loading ? (
+                <div className="flex justify-center py-8">
+                  <div className="w-10 h-10 border-4 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
                 </div>
+              ) : topics.length > 0 ? (
+                <div className="space-y-4">
+                  {topics.map((topic) => (
+                    <div
+                      key={topic.id}
+                      className="bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-4"
+                    >
+                      {editingTopic && editingTopic.id === topic.id ? (
+                        <form
+                          onSubmit={handleUpdateTopic}
+                          className="space-y-4"
+                        >
+                          <div>
+                            <label className="block text-secondary-700 dark:text-secondary-300 mb-2">
+                              Topic Name
+                            </label>
+                            <input
+                              type="text"
+                              value={editingTopic.name}
+                              onChange={(e) =>
+                                setEditingTopic({
+                                  ...editingTopic,
+                                  name: e.target.value,
+                                })
+                              }
+                              className="w-full px-4 py-2 rounded-lg border border-secondary-200 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:bg-secondary-800 dark:border-secondary-700 dark:text-white"
+                              required
+                            />
+                          </div>
 
-                <div className="flex justify-end">
-                  <button
-                    type="submit"
-                    className="px-4 py-2 rounded-lg bg-primary-500 text-white hover:bg-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
-                  >
-                    Create Topic
-                  </button>
-                </div>
-              </form>
-            </div>
+                          <div>
+                            <label className="block text-secondary-700 dark:text-secondary-300 mb-2">
+                              Topic Color
+                            </label>
+                            <div className="flex flex-wrap gap-2">
+                              {colorOptions.map((color) => (
+                                <button
+                                  key={color}
+                                  type="button"
+                                  className={`w-8 h-8 rounded-full ${
+                                    editingTopic.color === color
+                                      ? "ring-2 ring-offset-2 ring-secondary-900 dark:ring-secondary-100"
+                                      : ""
+                                  }`}
+                                  style={{ backgroundColor: color }}
+                                  onClick={() =>
+                                    setEditingTopic({ ...editingTopic, color })
+                                  }
+                                  aria-label={`Select ${color} color`}
+                                />
+                              ))}
+                            </div>
+                          </div>
 
-            {/* Topics list */}
-            <h2 className="text-lg font-semibold text-secondary-900 dark:text-secondary-100 mb-4">
-              Your Topics
-            </h2>
+                          <div className="flex justify-end space-x-2">
+                            <button
+                              type="button"
+                              onClick={cancelEditTopic}
+                              className="px-4 py-2 rounded-lg bg-secondary-100 text-secondary-700 hover:bg-secondary-200 focus:outline-none dark:bg-secondary-700 dark:text-secondary-300 dark:hover:bg-secondary-600"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="submit"
+                              className="px-4 py-2 rounded-lg bg-primary-500 text-white hover:bg-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
+                            >
+                              Save
+                            </button>
+                          </div>
+                        </form>
+                      ) : (
+                        <div className="flex justify-between items-center">
+                          <div className="flex items-center">
+                            <div
+                              className="w-6 h-6 rounded-full mr-3"
+                              style={{ backgroundColor: topic.color }}
+                            ></div>
+                            <span className="text-lg text-secondary-900 dark:text-secondary-100">
+                              {topic.name}
+                            </span>
+                          </div>
 
-            {loading ? (
-              <div className="flex justify-center py-8">
-                <div className="w-10 h-10 border-4 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
-              </div>
-            ) : topics.length > 0 ? (
-              <div className="space-y-4">
-                {topics.map((topic) => (
-                  <div
-                    key={topic.id}
-                    className="bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-4"
-                  >
-                    {editingTopic && editingTopic.id === topic.id ? (
-                      <form onSubmit={handleUpdateTopic} className="space-y-4">
-                        <div>
-                          <label className="block text-secondary-700 dark:text-secondary-300 mb-2">
-                            Topic Name
-                          </label>
-                          <input
-                            type="text"
-                            value={editingTopic.name}
-                            onChange={(e) =>
-                              setEditingTopic({
-                                ...editingTopic,
-                                name: e.target.value,
-                              })
-                            }
-                            className="w-full px-4 py-2 rounded-lg border border-secondary-200 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:bg-secondary-800 dark:border-secondary-700 dark:text-white"
-                            required
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-secondary-700 dark:text-secondary-300 mb-2">
-                            Topic Color
-                          </label>
-                          <div className="flex flex-wrap gap-2">
-                            {colorOptions.map((color) => (
-                              <button
-                                key={color}
-                                type="button"
-                                className={`w-8 h-8 rounded-full ${
-                                  editingTopic.color === color
-                                    ? "ring-2 ring-offset-2 ring-secondary-900 dark:ring-secondary-100"
-                                    : ""
-                                }`}
-                                style={{ backgroundColor: color }}
-                                onClick={() =>
-                                  setEditingTopic({ ...editingTopic, color })
-                                }
-                                aria-label={`Select ${color} color`}
-                              />
-                            ))}
+                          <div className="flex space-x-2">
+                            <button
+                              onClick={() => startEditTopic(topic)}
+                              className="p-2 text-secondary-500 hover:text-secondary-700 dark:hover:text-secondary-300"
+                              title="Edit topic"
+                            >
+                              <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                className="h-5 w-5"
+                                viewBox="0 0 20 20"
+                                fill="currentColor"
+                              >
+                                <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
+                              </svg>
+                            </button>
+                            <button
+                              onClick={() => handleDeleteTopic(topic.id)}
+                              className="p-2 text-red-500 hover:text-red-700 dark:hover:text-red-300"
+                              title="Delete topic"
+                            >
+                              <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                className="h-5 w-5"
+                                viewBox="0 0 20 20"
+                                fill="currentColor"
+                              >
+                                <path
+                                  fillRule="evenodd"
+                                  d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h10a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z"
+                                  clipRule="evenodd"
+                                />
+                              </svg>
+                            </button>
                           </div>
                         </div>
-
-                        <div className="flex justify-end space-x-2">
-                          <button
-                            type="button"
-                            onClick={cancelEditTopic}
-                            className="px-4 py-2 rounded-lg bg-secondary-100 text-secondary-700 hover:bg-secondary-200 focus:outline-none dark:bg-secondary-700 dark:text-secondary-300 dark:hover:bg-secondary-600"
-                          >
-                            Cancel
-                          </button>
-                          <button
-                            type="submit"
-                            className="px-4 py-2 rounded-lg bg-primary-500 text-white hover:bg-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
-                          >
-                            Save
-                          </button>
-                        </div>
-                      </form>
-                    ) : (
-                      <div className="flex justify-between items-center">
-                        <div className="flex items-center">
-                          <div
-                            className="w-6 h-6 rounded-full mr-3"
-                            style={{ backgroundColor: topic.color }}
-                          ></div>
-                          <span className="text-lg text-secondary-900 dark:text-secondary-100">
-                            {topic.name}
-                          </span>
-                        </div>
-
-                        <div className="flex space-x-2">
-                          <button
-                            onClick={() => startEditTopic(topic)}
-                            className="p-2 text-secondary-500 hover:text-secondary-700 dark:hover:text-secondary-300"
-                            title="Edit topic"
-                          >
-                            <svg
-                              xmlns="http://www.w3.org/2000/svg"
-                              className="h-5 w-5"
-                              viewBox="0 0 20 20"
-                              fill="currentColor"
-                            >
-                              <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
-                            </svg>
-                          </button>
-                          <button
-                            onClick={() => handleDeleteTopic(topic.id)}
-                            className="p-2 text-red-500 hover:text-red-700 dark:hover:text-red-300"
-                            title="Delete topic"
-                          >
-                            <svg
-                              xmlns="http://www.w3.org/2000/svg"
-                              className="h-5 w-5"
-                              viewBox="0 0 20 20"
-                              fill="currentColor"
-                            >
-                              <path
-                                fillRule="evenodd"
-                                d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h10a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z"
-                                clipRule="evenodd"
-                              />
-                            </svg>
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-6 text-center">
-                <p className="text-secondary-600 dark:text-secondary-400">
-                  No custom topics created yet.
-                </p>
-                <p className="mt-2 text-secondary-600 dark:text-secondary-400">
-                  Create your first topic above to start organizing your threads
-                  and actions.
-                </p>
-              </div>
-            )}
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="bg-white dark:bg-secondary-800 rounded-lg shadow-sm p-6 text-center">
+                  <p className="text-secondary-600 dark:text-secondary-400">
+                    No custom topics created yet.
+                  </p>
+                  <p className="mt-2 text-secondary-600 dark:text-secondary-400">
+                    Create your first topic above to start organizing your
+                    threads and actions.
+                  </p>
+                </div>
+              )}
+              {/* Data Management Section */}
+              <DataManagementSection db={db} showToast={showToast} />
+            </div>
           </div>
         );
-      } // Action detail component
+      }
       function ActionDetail({ db, action, navigateTo, showToast }) {
         const [actionData, setActionData] = React.useState(action);
         const [loading, setLoading] = React.useState(true);
@@ -3346,7 +3870,7 @@
                                 <h3 className="text-base font-medium text-secondary-900 dark:text-secondary-100">
                                   {thread.title}
                                 </h3>
-                                </div>
+                              </div>
                               {topic && (
                                 <span
                                   className="px-2 py-1 text-xs rounded-full"
@@ -3798,7 +4322,7 @@
           await db.add("threadHistory", history);
 
           // Update thread state
-          const updatedThread = { ...thread, state: newState }
+          const updatedThread = { ...thread, state: newState };
           thread.state = newState;
           await db.put("threads", updatedThread);
           setThreadState(newState);
