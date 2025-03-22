@@ -352,6 +352,71 @@
         #video.hidden {
             visibility: hidden;
         }
+        /* Loading overlay styles */
+.loading-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.9);
+    z-index: 9999;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    opacity: 1;
+    transition: opacity 0.5s ease;
+}
+
+.loading-overlay.hidden {
+    opacity: 0;
+    pointer-events: none;
+}
+
+.loading-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+}
+
+.loading-text {
+    text-align: center;
+    color: white;
+    font-size: 18px;
+    line-height: 1.6;
+}
+
+.loading-spinner {
+    width: 60px;
+    height: 60px;
+    border: 5px solid rgba(255, 255, 255, 0.3);
+    border-radius: 50%;
+    border-top-color: var(--primary);
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* Progress bar for loading */
+.loading-progress {
+    width: 250px;
+    height: 10px;
+    background-color: rgba(255, 255, 255, 0.2);
+    border-radius: 5px;
+    margin-top: 10px;
+    overflow: hidden;
+}
+
+.loading-progress-bar {
+    height: 100%;
+    width: 0%;
+    background-color: var(--primary);
+    transition: width 0.3s ease;
+}
     </style>
 </head>
 <body>
@@ -606,73 +671,100 @@
         let hands;
         let camera;
         
-        // Initialize the application
-        async function init() {
-            statusText.textContent = 'Status: Loading hand tracking model...';
-            
-            try {
-                // Set initial canvas size
-                setCanvasSize(currentCanvasSize);
-                
-                // Initialize MediaPipe Hands
-                hands = new Hands({
-                    locateFile: (file) => {
-                        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
-                    }
-                });
-                
-                hands.setOptions({
-                    maxNumHands: 1,
-                    modelComplexity: 1,
-                    minDetectionConfidence: 0.5,
-                    minTrackingConfidence: 0.5
-                });
-                
-                hands.onResults(onHandResults);
-                
-                // Start camera
-                await startCamera();
-                
-                // Hide help text after 10 seconds
-                setTimeout(() => {
-                    helpText.classList.add('hidden');
-                }, 10000);
-            } catch (error) {
-                statusText.textContent = `Status: Error - ${error.message}`;
-                console.error('Error initializing:', error);
-            }
-        }
+// Modify your init function to include loading states
+async function init() {
+    try {
+        updateLoadingStatus('Setting up canvas...');
         
-        // Start or restart the camera with the current canvas dimensions
-        async function startCamera() {
-            // Stop existing camera if it's running
-            if (camera && cameraRunning) {
-                camera.stop();
-                cameraRunning = false;
-            }
-            
-            // Get current dimensions
-            const dimensions = canvasSizes[currentCanvasSize];
-            
-            try {
-                // Create new camera instance
-                camera = new Camera(video, {
-                    onFrame: async () => {
-                        await hands.send({image: video});
-                    },
-                    width: dimensions.width,
-                    height: dimensions.height
-                });
-                
-                await camera.start();
-                cameraRunning = true;
-                statusText.textContent = 'Status: Ready! Hold SPACE to draw with index finger.';
-            } catch (error) {
-                statusText.textContent = `Status: Camera error - ${error.message}`;
-                console.error('Camera error:', error);
-            }
-        }
+        // Set initial canvas size
+        setCanvasSize(currentCanvasSize);
         
+        updateLoadingStatus('Loading hand tracking model...');
+        
+        // Initialize MediaPipe Hands
+        hands = new Hands({
+            locateFile: (file) => {
+                updateLoadingStatus(`Loading module: ${file}`);
+                return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+            }
+        });
+        
+        updateLoadingStatus('Configuring hand tracking...');
+        
+        // Configure MediaPipe Hands
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+        
+        hands.onResults(onHandResults);
+        
+        updateLoadingStatus('Accessing camera...');
+        
+        // Start camera
+        await startCamera();
+        
+        updateLoadingStatus('Application ready!');
+        
+        // Short delay to show the "ready" message before hiding loading screen
+        setTimeout(() => {
+            hideLoading();
+        }, 1000);
+        
+        // Hide help text after 10 seconds
+        setTimeout(() => {
+            helpText.classList.add('hidden');
+        }, 10000);
+    } catch (error) {
+        updateLoadingStatus(`Error: ${error.message}. Please refresh the page.`);
+        console.error('Error initializing:', error);
+    }
+}
+
+// Loading helper functions
+function updateLoadingStatus(message) {
+    loadingStatus.textContent = message;
+    statusText.textContent = `Status: ${message}`;
+    console.log(`Loading: ${message}`);
+}
+
+function hideLoading() {
+    loadingOverlay.classList.add('hidden');
+}
+// Modify the startCamera function to update loading status
+async function startCamera() {
+    // Stop existing camera if it's running
+    if (camera && cameraRunning) {
+        camera.stop();
+        cameraRunning = false;
+    }
+    
+    // Get current dimensions
+    const dimensions = canvasSizes[currentCanvasSize];
+    
+    try {
+        updateLoadingStatus('Initializing camera...');
+        
+        // Create new camera instance
+        camera = new Camera(video, {
+            onFrame: async () => {
+                await hands.send({image: video});
+            },
+            width: dimensions.width,
+            height: dimensions.height
+        });
+        
+        updateLoadingStatus('Starting camera feed...');
+        await camera.start();
+        cameraRunning = true;
+        statusText.textContent = 'Status: Ready! Hold SPACE to draw with index finger.';
+    } catch (error) {
+        updateLoadingStatus(`Camera error: ${error.message}`);
+        console.error('Camera error:', error);
+    }
+}
         // Set canvas size based on selection
         function setCanvasSize(size) {
             const dimensions = canvasSizes[size];
@@ -1201,6 +1293,16 @@
         // Initialize the application when the page loads
         window.addEventListener('load', init);
     </script>
+    <!-- Loading Overlay -->
+    <div id="loadingOverlay" class="loading-overlay">
+        <div class="loading-content">
+            <div class="loading-spinner"></div>
+            <div class="loading-text">
+                <p>Loading Air Drawing Pro</p>
+                <p id="loadingStatus">Initializing hand tracking...</p>
+            </div>
+        </div>
+    </div>
 </body>
 </html>
 
