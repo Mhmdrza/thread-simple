@@ -1,0 +1,1208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Air Drawing Pro - Finger Tracking</title>
+    <style>
+        :root {
+            --primary: #4CAF50;
+            --primary-dark: #3e8e41;
+            --secondary: #2196F3;
+            --secondary-dark: #0b7dda;
+            --danger: #f44336;
+            --danger-dark: #d32f2f;
+            --neutral: #757575;
+            --neutral-dark: #616161;
+            --bg-dark: #1a1a1a;
+            --bg-darker: #121212;
+            --text: #ffffff;
+            --border-radius: 8px;
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: var(--bg-dark);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: var(--text);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .header {
+            padding: 10px 20px;
+            background-color: var(--bg-darker);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #333;
+        }
+        
+        .title {
+            font-size: 24px;
+            font-weight: bold;
+        }
+        
+        .container {
+            flex: 1;
+            display: flex;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .sidebar {
+            width: 250px;
+            background-color: var(--bg-darker);
+            padding: 15px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            border-right: 1px solid #333;
+            overflow-y: auto;
+        }
+        
+        .main-content {
+            flex: 1;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+            background-color: #222;
+            overflow: hidden;
+        }
+        
+        .video-container {
+            position: relative;
+            margin: 0 auto;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            max-width: 100%;
+            max-height: 100%;
+        }
+        
+        #video {
+            transform: scaleX(-1);
+            position: absolute;
+            z-index: 1;
+            object-fit: contain;
+            max-width: 100%;
+            max-height: 100%;
+        }
+        
+        #canvas {
+            position: relative;
+            z-index: 2;
+            background-color: transparent;
+            transform: scaleX(-1); /* Mirror the canvas to match the mirrored video */
+        }
+        
+        .control-section {
+            background-color: rgba(0, 0, 0, 0.2);
+            border-radius: var(--border-radius);
+            padding: 15px;
+        }
+        
+        .section-title {
+            font-size: 16px;
+            margin-bottom: 10px;
+            font-weight: bold;
+            color: var(--primary);
+        }
+        
+        .control-group {
+            margin-bottom: 15px;
+        }
+        
+        .btn-group {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        
+        button {
+            padding: 8px 12px;
+            border: none;
+            border-radius: 4px;
+            color: white;
+            font-size: 14px;
+            cursor: pointer;
+            transition: background-color 0.2s, transform 0.1s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 5px;
+        }
+        
+        button:hover {
+            opacity: 0.9;
+        }
+        
+        button:active {
+            transform: scale(0.97);
+        }
+        
+        .btn-primary {
+            background-color: var(--primary);
+        }
+        
+        .btn-primary:hover {
+            background-color: var(--primary-dark);
+        }
+        
+        .btn-secondary {
+            background-color: var(--secondary);
+        }
+        
+        .btn-secondary:hover {
+            background-color: var(--secondary-dark);
+        }
+        
+        .btn-danger {
+            background-color: var(--danger);
+        }
+        
+        .btn-danger:hover {
+            background-color: var(--danger-dark);
+        }
+        
+        .btn-neutral {
+            background-color: var(--neutral);
+        }
+        
+        .btn-neutral:hover {
+            background-color: var(--neutral-dark);
+        }
+        
+        .color-picker {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+        
+        .color-option {
+            width: 100%;
+            aspect-ratio: 1;
+            border-radius: 50%;
+            cursor: pointer;
+            border: 2px solid transparent;
+            transition: transform 0.2s, border-color 0.2s;
+        }
+        
+        .color-option:hover {
+            transform: scale(1.1);
+        }
+        
+        .color-option.active {
+            border: 2px solid white;
+            box-shadow: 0 0 5px rgba(255, 255, 255, 0.5);
+        }
+        
+        .custom-color {
+            width: 100%;
+            padding: 0;
+            border: none;
+            height: 30px;
+            border-radius: 4px;
+            cursor: pointer;
+            background-color: transparent;
+        }
+        
+        .thickness-slider {
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        
+        .thickness-slider input {
+            width: 100%;
+            cursor: pointer;
+        }
+        
+        .status-bar {
+            background-color: var(--bg-darker);
+            padding: 8px 15px;
+            display: flex;
+            justify-content: space-between;
+            border-top: 1px solid #333;
+            font-size: 14px;
+        }
+        
+        .canvas-size-options {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 8px;
+        }
+        
+        .canvas-option {
+            padding: 8px;
+            text-align: center;
+            border-radius: 4px;
+            background-color: rgba(255, 255, 255, 0.1);
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        
+        .canvas-option:hover {
+            background-color: rgba(255, 255, 255, 0.2);
+        }
+        
+        .canvas-option.active {
+            background-color: var(--primary);
+        }
+        
+        .help-text {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            border-radius: 4px;
+            max-width: 400px;
+            font-size: 12px;
+            z-index: 10;
+            transition: opacity 0.3s;
+        }
+        
+        .help-text.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+        
+        .eyedropper-cursor {
+            cursor: crosshair !important;
+        }
+        
+        .toggle-sidebar {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            z-index: 100;
+            background-color: rgba(0, 0, 0, 0.5);
+            padding: 5px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            display: none;
+        }
+        
+        @media (max-width: 768px) {
+            .sidebar {
+                position: absolute;
+                left: -250px;
+                height: 100%;
+                transition: left 0.3s;
+                z-index: 1000;
+            }
+            
+            .sidebar.show {
+                left: 0;
+            }
+            
+            .toggle-sidebar {
+                display: block;
+            }
+        }
+        
+        /* Canvas size indicator */
+        .canvas-size-label {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-size: 12px;
+            z-index: 10;
+        }
+        
+        /* Color preview in eyedropper mode */
+        .color-preview {
+            position: absolute;
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            border: 2px solid white;
+            pointer-events: none;
+            z-index: 999;
+            display: none;
+        }
+        .checkbox-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+        }
+
+        .checkbox-container input {
+            cursor: pointer;
+        }
+
+        /* Background display */
+        #video.hidden {
+            visibility: hidden;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="title">Air Drawing Pro</div>
+        <div class="btn-group">
+            <button id="helpBtn" class="btn-neutral">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
+                    <line x1="12" y1="17" x2="12" y2="17"></line>
+                </svg>
+                Help
+            </button>
+        </div>
+    </div>
+    
+    <div class="container">
+        <button class="toggle-sidebar" id="toggleSidebar">☰ Menu</button>
+        
+        <div class="sidebar" id="sidebar">
+            <div class="control-section">
+                <div class="section-title">Drawing Tools</div>
+                <div class="control-group">
+                    <div class="btn-group">
+                        <button id="undoBtn" class="btn-secondary" disabled>
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M9 14 4 9l5-5"></path>
+                                <path d="M4 9h11a4 4 0 0 1 4 4v3"></path>
+                            </svg>
+                            Undo
+                        </button>
+                        <button id="redoBtn" class="btn-secondary" disabled>
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="m15 14 5-5-5-5"></path>
+                                <path d="M4 9h11a4 4 0 1 1 0 8h-1"></path>
+                            </svg>
+                            Redo
+                        </button>
+                        <button id="clearBtn" class="btn-danger">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M3 6h18"></path>
+                                <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path>
+                                <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path>
+                                <line x1="10" y1="11" x2="10" y2="17"></line>
+                                <line x1="14" y1="11" x2="14" y2="17"></line>
+                            </svg>
+                            Clear
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="control-section">
+                <div class="section-title">Colors</div>
+                <div class="control-group">
+                    <div class="color-picker">
+                        <div class="color-option active" style="background-color: #ff0000;" data-color="#ff0000"></div>
+                        <div class="color-option" style="background-color: #00ff00;" data-color="#00ff00"></div>
+                        <div class="color-option" style="background-color: #0000ff;" data-color="#0000ff"></div>
+                        <div class="color-option" style="background-color: #ffff00;" data-color="#ffff00"></div>
+                        <div class="color-option" style="background-color: #ff00ff;" data-color="#ff00ff"></div>
+                        <div class="color-option" style="background-color: #00ffff;" data-color="#00ffff"></div>
+                        <div class="color-option" style="background-color: #ffffff;" data-color="#ffffff"></div>
+                        <div class="color-option" style="background-color: #000000;" data-color="#000000"></div>
+                        <div class="color-option" style="background-color: #ff8000;" data-color="#ff8000"></div>
+                        <div class="color-option" style="background-color: #8000ff;" data-color="#8000ff"></div>
+                    </div>
+                    
+                    <div class="btn-group">
+                        <button id="eyedropperBtn" class="btn-secondary">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="m2 22 1-1h3l9-9"></path>
+                                <path d="M3 21v-3l9-9"></path>
+                                <path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l-3 3"></path>
+                            </svg>
+                            Pick Color
+                        </button>
+                        <input type="color" id="customColor" class="custom-color" value="#ff0000">
+                    </div>
+                </div>
+            </div>
+            
+            <div class="control-section">
+                <div class="section-title">Line Settings</div>
+                <div class="control-group">
+                    <div class="thickness-slider">
+                        <label for="thickness">Line Thickness: <span id="thickness-value">5px</span></label>
+                        <input type="range" id="thickness" min="1" max="30" value="5">
+                    </div>
+                </div>
+            </div>
+            
+            <!-- <div class="control-section">
+                <div class="section-title">Canvas Size</div>
+                <div class="canvas-size-options">
+                    <div class="canvas-option" data-size="small">Small</div>
+                    <div class="canvas-option active" data-size="medium">Medium</div>
+                    <div class="canvas-option" data-size="large">Large</div>
+                    <div class="canvas-option" data-size="fullscreen">Full Screen</div>
+                </div>
+            </div> -->
+
+            <div class="control-section">
+                <div class="section-title">Background</div>
+                <div class="control-group">
+                    <div class="btn-group">
+                        <button id="transparentBgBtn" class="btn-secondary active">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M21 12a9 9 0 0 1-9 9m9-9a9 9 0 0 0-9-9m9 9H3m9 9a9 9 0 0 1-9-9m9 9c-4.97 0-9-4.03-9-9m9 9a9 9 0 0 0 9-9"></path>
+                            </svg>
+                            Transparent
+                        </button>
+                        <button id="whiteBgBtn" class="btn-secondary">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                            </svg>
+                            White
+                        </button>
+                        <button id="blackBgBtn" class="btn-secondary">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <rect x="3" y="3" width="18" height="18" rx="2" ry="2" fill="currentColor"></rect>
+                            </svg>
+                            Black
+                        </button>
+                    </div>
+                    <div style="margin-top: 8px;">
+                        <input type="file" id="bgImageInput" accept="image/*" style="display: none;">
+                        <button id="uploadImageBtn" class="btn-secondary" style="width: 100%;">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                                <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                                <polyline points="21 15 16 10 5 21"></polyline>
+                            </svg>
+                            Upload Image
+                        </button>
+                    </div>
+                    <div style="margin-top: 8px;">
+                        <label class="checkbox-container">
+                            <input type="checkbox" id="hideVideoFeed" />
+                            <span>Hide Video Feed</span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="control-section">
+                <div class="section-title">Export</div>
+                <div class="control-group">
+                    <div class="btn-group">
+                        <button id="saveBtn" class="btn-primary">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                                <polyline points="7 10 12 15 17 10"></polyline>
+                                <line x1="12" y1="15" x2="12" y2="3"></line>
+                            </svg>
+                            Save Drawing
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="main-content">
+            <div class="video-container" id="videoContainer">
+                <video id="video" autoplay muted></video>
+                <canvas id="canvas"></canvas>
+            </div>
+            <div class="canvas-size-label" id="canvasSizeLabel">Canvas: Medium</div>
+        </div>
+        
+        <div class="color-preview" id="colorPreview"></div>
+    </div>
+    
+    <div class="status-bar">
+        <div id="status">Status: Getting camera ready...</div>
+        <div>Hold SPACE to draw with index finger</div>
+    </div>
+    
+    <div class="help-text" id="helpText">
+        <p><strong>Controls:</strong></p>
+        <p>• Hold SPACE to draw with your index finger</p>
+        <p>• Use the color picker to select colors or pick colors from the canvas</p>
+        <p>• Adjust line thickness with the slider</p>
+        <p>• Undo/Redo your drawing actions</p>
+        <p>• Change canvas size for different drawing areas</p>
+        <p>• Save your drawing as an image file</p>
+        <p>(Click anywhere to dismiss)</p>
+    </div>
+
+    <!-- Make sure we're loading MediaPipe from CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    
+    <script>
+        // DOM Elements
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const statusText = document.getElementById('status');
+        const clearBtn = document.getElementById('clearBtn');
+        const saveBtn = document.getElementById('saveBtn');
+        const undoBtn = document.getElementById('undoBtn');
+        const redoBtn = document.getElementById('redoBtn');
+        const thicknessSlider = document.getElementById('thickness');
+        const thicknessValue = document.getElementById('thickness-value');
+        const colorOptions = document.querySelectorAll('.color-option');
+        const customColorInput = document.getElementById('customColor');
+        const eyedropperBtn = document.getElementById('eyedropperBtn');
+        const colorPreview = document.getElementById('colorPreview');
+        const canvasOptions = document.querySelectorAll('.canvas-option');
+        const canvasSizeLabel = document.getElementById('canvasSizeLabel');
+        const videoContainer = document.getElementById('videoContainer');
+        const helpBtn = document.getElementById('helpBtn');
+        const helpText = document.getElementById('helpText');
+        const toggleSidebarBtn = document.getElementById('toggleSidebar');
+        const sidebar = document.getElementById('sidebar');
+        const transparentBgBtn = document.getElementById('transparentBgBtn');
+        const whiteBgBtn = document.getElementById('whiteBgBtn');
+        const blackBgBtn = document.getElementById('blackBgBtn');
+        const uploadImageBtn = document.getElementById('uploadImageBtn');
+        const bgImageInput = document.getElementById('bgImageInput');
+        const hideVideoFeed = document.getElementById('hideVideoFeed');
+        
+        // Drawing settings
+        let isDrawing = false;
+        let isSpacePressed = false;
+        let isEyedropperMode = false;
+        let currentColor = '#ff0000';
+        let lineThickness = 5;
+        let indexFingerPosition = null;
+        let paths = [];
+        let redoPaths = [];
+        let currentPath = [];
+        let currentCanvasSize = 'medium';
+        let cameraRunning = false;
+        let backgroundType = 'transparent'; // 'transparent', 'white', 'black', 'image'
+        let backgroundImage = null;
+        let showVideoFeed = true;
+        
+        // Canvas size configurations
+        const canvasSizes = {
+            small: { width: 640, height: 480 },
+            medium: { width: 800, height: 600 },
+            large: { width: 1024, height: 768 },
+            fullscreen: { width: window.innerWidth, height: window.innerHeight - 100 } // Adjust for header and status bar
+        };
+        
+        // MediaPipe Hands
+        let hands;
+        let camera;
+        
+        // Initialize the application
+        async function init() {
+            statusText.textContent = 'Status: Loading hand tracking model...';
+            
+            try {
+                // Set initial canvas size
+                setCanvasSize(currentCanvasSize);
+                
+                // Initialize MediaPipe Hands
+                hands = new Hands({
+                    locateFile: (file) => {
+                        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+                    }
+                });
+                
+                hands.setOptions({
+                    maxNumHands: 1,
+                    modelComplexity: 1,
+                    minDetectionConfidence: 0.5,
+                    minTrackingConfidence: 0.5
+                });
+                
+                hands.onResults(onHandResults);
+                
+                // Start camera
+                await startCamera();
+                
+                // Hide help text after 10 seconds
+                setTimeout(() => {
+                    helpText.classList.add('hidden');
+                }, 10000);
+            } catch (error) {
+                statusText.textContent = `Status: Error - ${error.message}`;
+                console.error('Error initializing:', error);
+            }
+        }
+        
+        // Start or restart the camera with the current canvas dimensions
+        async function startCamera() {
+            // Stop existing camera if it's running
+            if (camera && cameraRunning) {
+                camera.stop();
+                cameraRunning = false;
+            }
+            
+            // Get current dimensions
+            const dimensions = canvasSizes[currentCanvasSize];
+            
+            try {
+                // Create new camera instance
+                camera = new Camera(video, {
+                    onFrame: async () => {
+                        await hands.send({image: video});
+                    },
+                    width: dimensions.width,
+                    height: dimensions.height
+                });
+                
+                await camera.start();
+                cameraRunning = true;
+                statusText.textContent = 'Status: Ready! Hold SPACE to draw with index finger.';
+            } catch (error) {
+                statusText.textContent = `Status: Camera error - ${error.message}`;
+                console.error('Camera error:', error);
+            }
+        }
+        
+        // Set canvas size based on selection
+        function setCanvasSize(size) {
+            const dimensions = canvasSizes[size];
+            canvas.width = dimensions.width;
+            canvas.height = dimensions.height;
+            
+            // Update video container size
+            videoContainer.style.width = `${dimensions.width}px`;
+            videoContainer.style.height = `${dimensions.height}px`;
+            
+            // Update label
+            canvasSizeLabel.textContent = `Canvas: ${size.charAt(0).toUpperCase() + size.slice(1)}`;
+            
+            // Restart camera with new dimensions
+            startCamera();
+            
+            // Redraw canvas with new dimensions
+            drawCanvas();
+        }
+        
+        // Correct coordinate for mirrored display
+        function correctCoordinate(x) {
+            return canvas.width - x;
+        }
+        
+        // Process hand results from MediaPipe
+        function onHandResults(results) {
+            // Draw the current state
+            drawCanvas();
+            
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                // Get the index finger tip (landmark 8)
+                const hand = results.multiHandLandmarks[0];
+                const indexFinger = hand[8];
+                
+                // Convert normalized coordinates to canvas coordinates
+                // Note: We don't need to flip x here as the canvas itself is flipped
+                const x = indexFinger.x * canvas.width;
+                const y = indexFinger.y * canvas.height;
+                
+                indexFingerPosition = { x, y };
+                
+                // If in eyedropper mode, show color preview
+                if (isEyedropperMode && indexFingerPosition) {
+                    // Need to flip X for correct pixel picking due to canvas mirroring
+                    const pixelX = correctCoordinate(x);
+                    const pixelData = ctx.getImageData(pixelX, y, 1, 1).data;
+                    const pickedColor = `rgb(${pixelData[0]}, ${pixelData[1]}, ${pixelData[2]})`;
+                    
+                    // Position and show color preview
+                    colorPreview.style.backgroundColor = pickedColor;
+                    colorPreview.style.display = 'block';
+                    colorPreview.style.left = `${x + 20}px`;
+                    colorPreview.style.top = `${y + 20}px`;
+                    
+                    // If space is pressed in eyedropper mode, select the color
+                    if (isSpacePressed) {
+                        // Convert RGB to hex
+                        const hexColor = rgbToHex(pixelData[0], pixelData[1], pixelData[2]);
+                        setCurrentColor(hexColor);
+                        
+                        // Exit eyedropper mode
+                        toggleEyedropperMode(false);
+                        isSpacePressed = false; // Reset space to prevent immediate drawing
+                    }
+                }
+                // If space is pressed and not in eyedropper mode, draw
+                else if (isSpacePressed && indexFingerPosition && !isEyedropperMode) {
+                    if (!isDrawing) {
+                        // Start a new drawing segment
+                        isDrawing = true;
+                        
+                        // Clear redo stack when starting a new path
+                        redoPaths = [];
+                        updateUndoRedoButtons();
+                        
+                        // Start a new path
+                        currentPath = [{
+                            x: indexFingerPosition.x,
+                            y: indexFingerPosition.y,
+                            color: currentColor,
+                            thickness: lineThickness
+                        }];
+                    } else {
+                        // Continue the current path
+                        currentPath.push({
+                            x: indexFingerPosition.x,
+                            y: indexFingerPosition.y,
+                            color: currentColor,
+                            thickness: lineThickness
+                        });
+                    }
+                } else if (isDrawing) {
+                    // Finish the current path
+                    isDrawing = false;
+                    if (currentPath.length > 0) {
+                        paths.push([...currentPath]);
+                        currentPath = [];
+                        updateUndoRedoButtons();
+                    }
+                }
+            } else {
+                indexFingerPosition = null;
+                if (isDrawing) {
+                    isDrawing = false;
+                    if (currentPath.length > 0) {
+                        paths.push([...currentPath]);
+                        currentPath = [];
+                        updateUndoRedoButtons();
+                    }
+                }
+                
+                // Hide color preview when hand is not visible
+                if (isEyedropperMode) {
+                    colorPreview.style.display = 'none';
+                }
+            }
+        }
+        
+        // Draw the current canvas state
+        function drawCanvas() {
+            // Clear the canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Draw background first
+            if (backgroundType === 'white') {
+                ctx.fillStyle = 'white';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+            } else if (backgroundType === 'black') {
+                ctx.fillStyle = 'black';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+            } else if (backgroundType === 'image' && backgroundImage) {
+                ctx.drawImage(backgroundImage, 0, 0, canvas.width, canvas.height);
+            }
+
+            // Draw previously saved paths
+            paths.forEach(path => {
+                if (path.length < 2) return;
+                
+                for (let i = 1; i < path.length; i++) {
+                    const point = path[i];
+                    const prevPoint = path[i - 1];
+                    
+                    ctx.beginPath();
+                    ctx.moveTo(prevPoint.x, prevPoint.y);
+                    ctx.lineTo(point.x, point.y);
+                    ctx.strokeStyle = point.color;
+                    ctx.lineWidth = point.thickness;
+                    ctx.lineCap = 'round';
+                    ctx.lineJoin = 'round';
+                    ctx.stroke();
+                }
+            });
+            
+            // Draw current path being created
+            if (currentPath.length > 1) {
+                for (let i = 1; i < currentPath.length; i++) {
+                    const point = currentPath[i];
+                    const prevPoint = currentPath[i - 1];
+                    
+                    ctx.beginPath();
+                    ctx.moveTo(prevPoint.x, prevPoint.y);
+                    ctx.lineTo(point.x, point.y);
+                    ctx.strokeStyle = point.color;
+                    ctx.lineWidth = point.thickness;
+                    ctx.lineCap = 'round';
+                    ctx.lineJoin = 'round';
+                    ctx.stroke();
+                }
+            }
+            
+            // Draw the current finger position if detected
+            if (indexFingerPosition) {
+                ctx.beginPath();
+                ctx.arc(indexFingerPosition.x, indexFingerPosition.y, 10, 0, Math.PI * 2);
+                
+                if (isEyedropperMode) {
+                    ctx.fillStyle = 'rgba(0, 255, 255, 0.7)'; // Cyan for eyedropper mode
+                } else {
+                    ctx.fillStyle = isSpacePressed ? 'rgba(255, 0, 0, 0.7)' : 'rgba(0, 255, 0, 0.7)';
+                }
+                
+                ctx.fill();
+            }
+        }
+        
+        // Convert RGB to Hex
+        function rgbToHex(r, g, b) {
+            return '#' + [r, g, b].map(x => {
+                const hex = x.toString(16);
+                return hex.length === 1 ? '0' + hex : hex;
+            }).join('');
+        }
+        
+        // Toggle eyedropper mode
+        function toggleEyedropperMode(enable) {
+            isEyedropperMode = enable;
+            
+            if (enable) {
+                document.body.classList.add('eyedropper-cursor');
+                eyedropperBtn.classList.add('btn-danger');
+                eyedropperBtn.textContent = 'Cancel Pick';
+                statusText.textContent = 'Status: Color picker mode. Move finger over a color and press SPACE to select.';
+            } else {
+                document.body.classList.remove('eyedropper-cursor');
+                eyedropperBtn.classList.remove('btn-danger');
+                eyedropperBtn.innerHTML = `
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="m2 22 1-1h3l9-9"></path>
+                        <path d="M3 21v-3l9-9"></path>
+                        <path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l-3 3"></path>
+                    </svg>
+                    Pick Color`;
+                statusText.textContent = 'Status: Ready! Hold SPACE to draw with index finger.';
+                colorPreview.style.display = 'none';
+            }
+        }
+        
+        // Set current color
+        function setCurrentColor(color) {
+            currentColor = color;
+            customColorInput.value = color;
+            
+            // Update active color option
+            colorOptions.forEach(option => {
+                if (option.dataset.color === color) {
+                    option.classList.add('active');
+                } else {
+                    option.classList.remove('active');
+                }
+            });
+        }
+        
+        // Handle undo action
+        function undo() {
+            if (paths.length > 0) {
+                redoPaths.push(paths.pop());
+                drawCanvas();
+                updateUndoRedoButtons();
+            }
+        }
+        
+        // Handle redo action
+        function redo() {
+            if (redoPaths.length > 0) {
+                paths.push(redoPaths.pop());
+                drawCanvas();
+                updateUndoRedoButtons();
+            }
+        }
+        
+        // Clear the canvas
+        function clearCanvas() {
+            // Add current paths to undo stack before clearing
+            if (paths.length > 0) {
+                redoPaths = [];
+                redoPaths.push([...paths]);
+                paths = [];
+                drawCanvas();
+                updateUndoRedoButtons();
+            }
+        }
+        
+        // Update undo and redo button states
+        function updateUndoRedoButtons() {
+            undoBtn.disabled = paths.length === 0;
+            redoBtn.disabled = redoPaths.length === 0;
+        }
+        
+        // Save the drawing as an image
+        function saveDrawing() {
+            // Create a temporary canvas to save without hand tracking visuals
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = canvas.width;
+            tempCanvas.height = canvas.height;
+            const tempCtx = tempCanvas.getContext('2d');
+            
+            // Fill with white background (optional - remove for transparent background)
+            tempCtx.fillStyle = 'white';
+            tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+            
+            // Draw all paths to the temporary canvas
+            paths.forEach(path => {
+                if (path.length < 2) return;
+                
+                for (let i = 1; i < path.length; i++) {
+                    const point = path[i];
+                    const prevPoint = path[i - 1];
+                    
+                    tempCtx.beginPath();
+                    tempCtx.moveTo(prevPoint.x, prevPoint.y);
+                    tempCtx.lineTo(point.x, point.y);
+                    tempCtx.strokeStyle = point.color;
+                    tempCtx.lineWidth = point.thickness;
+                    tempCtx.lineCap = 'round';
+                    tempCtx.lineJoin = 'round';
+                    tempCtx.stroke();
+                }
+            });
+            
+            // Convert canvas to data URL and trigger download
+            const dataURL = tempCanvas.toDataURL('image/png');
+            const a = document.createElement('a');
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            a.download = `air-drawing-${timestamp}.png`;
+            a.href = dataURL;
+            a.click();
+            
+            statusText.textContent = 'Status: Drawing saved!';
+            setTimeout(() => {
+                statusText.textContent = 'Status: Ready! Hold SPACE to draw with index finger.';
+            }, 3000);
+        }
+        
+        // Event Listeners
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'Space' && !e.repeat) {
+                isSpacePressed = true;
+                e.preventDefault(); // Prevent page scrolling
+            }
+        });
+        
+        document.addEventListener('keyup', (e) => {
+            if (e.code === 'Space') {
+                isSpacePressed = false;
+                // If we were drawing, finalize the current path
+                if (isDrawing) {
+                    isDrawing = false;
+                    if (currentPath.length > 0) {
+                        paths.push([...currentPath]);
+                        currentPath = [];
+                        updateUndoRedoButtons();
+                    }
+                }
+                e.preventDefault();
+            }
+        });
+        
+        // Window resize handler
+        window.addEventListener('resize', () => {
+            // Update fullscreen size
+            canvasSizes.fullscreen = { 
+                width: window.innerWidth, 
+                height: window.innerHeight - 100 
+            };
+            
+            // If currently in fullscreen mode, update canvas size
+            if (currentCanvasSize === 'fullscreen') {
+                setCanvasSize('fullscreen');
+            }
+        });
+        
+        // Canvas size option buttons
+        canvasOptions.forEach(option => {
+            option.addEventListener('click', () => {
+                const size = option.dataset.size;
+                currentCanvasSize = size;
+                
+                // Update active state
+                canvasOptions.forEach(opt => opt.classList.remove('active'));
+                option.classList.add('active');
+                
+                // Set canvas size
+                setCanvasSize(size);
+            });
+        });
+        
+        // Color options
+        colorOptions.forEach(option => {
+            option.addEventListener('click', () => {
+                const color = option.dataset.color;
+                setCurrentColor(color);
+            });
+        });
+        
+        // Custom color input
+        customColorInput.addEventListener('input', () => {
+            // Remove active class from all color options
+            colorOptions.forEach(option => option.classList.remove('active'));
+            currentColor = customColorInput.value;
+        });
+        
+        // Eyedropper button
+        eyedropperBtn.addEventListener('click', () => {
+            toggleEyedropperMode(!isEyedropperMode);
+        });
+        
+        // Line thickness slider
+        thicknessSlider.addEventListener('input', () => {
+            lineThickness = parseInt(thicknessSlider.value);
+            thicknessValue.textContent = `${lineThickness}px`;
+        });
+        
+        // Clear button
+        clearBtn.addEventListener('click', clearCanvas);
+        
+        // Undo button
+        undoBtn.addEventListener('click', undo);
+        
+        // Redo button
+        redoBtn.addEventListener('click', redo);
+        
+        // Save button
+        saveBtn.addEventListener('click', saveDrawing);
+        
+        // Help button
+        helpBtn.addEventListener('click', () => {
+            helpText.classList.toggle('hidden');
+        });
+        
+        // Hide help text when clicked
+        helpText.addEventListener('click', () => {
+            helpText.classList.add('hidden');
+        });
+        
+        // Toggle sidebar on mobile
+        toggleSidebarBtn.addEventListener('click', () => {
+            sidebar.classList.toggle('show');
+        });
+
+        // Background button handlers
+        transparentBgBtn.addEventListener('click', () => {
+            setBackgroundType('transparent');
+        });
+
+        whiteBgBtn.addEventListener('click', () => {
+            setBackgroundType('white');
+        });
+
+        blackBgBtn.addEventListener('click', () => {
+            setBackgroundType('black');
+        });
+
+        uploadImageBtn.addEventListener('click', () => {
+            bgImageInput.click();
+        });
+
+        bgImageInput.addEventListener('change', (e) => {
+            if (e.target.files && e.target.files[0]) {
+                const file = e.target.files[0];
+                const reader = new FileReader();
+                
+                reader.onload = function(event) {
+                    const img = new Image();
+                    img.onload = function() {
+                        backgroundImage = img;
+                        setBackgroundType('image');
+                        drawCanvas();
+                    };
+                    img.src = event.target.result;
+                };
+                
+                reader.readAsDataURL(file);
+            }
+        });
+
+        hideVideoFeed.addEventListener('change', () => {
+            showVideoFeed = !hideVideoFeed.checked;
+            video.classList.toggle('hidden', !showVideoFeed);
+        });
+
+        function setBackgroundType(type) {
+            backgroundType = type;
+            
+            // Update active state of background buttons
+            transparentBgBtn.classList.toggle('active', type === 'transparent');
+            whiteBgBtn.classList.toggle('active', type === 'white');
+            blackBgBtn.classList.toggle('active', type === 'black');
+            
+            // Redraw canvas with new background
+            drawCanvas();
+        }
+
+        // Modify your save function to include the background
+        function saveDrawing() {
+            // Create a temporary canvas to save without hand tracking visuals
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = canvas.width;
+            tempCanvas.height = canvas.height;
+            const tempCtx = tempCanvas.getContext('2d');
+            
+            // Apply the same background to the temporary canvas
+            if (backgroundType === 'white') {
+                tempCtx.fillStyle = 'white';
+                tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+            } else if (backgroundType === 'black') {
+                tempCtx.fillStyle = 'black';
+                tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+            } else if (backgroundType === 'image' && backgroundImage) {
+                tempCtx.drawImage(backgroundImage, 0, 0, tempCanvas.width, tempCanvas.height);
+            }
+            
+            // Draw all paths to the temporary canvas
+            paths.forEach(path => {
+                if (path.length < 2) return;
+                
+                for (let i = 1; i < path.length; i++) {
+                    const point = path[i];
+                    const prevPoint = path[i - 1];
+                    
+                    tempCtx.beginPath();
+                    tempCtx.moveTo(prevPoint.x, prevPoint.y);
+                    tempCtx.lineTo(point.x, point.y);
+                    tempCtx.strokeStyle = point.color;
+                    tempCtx.lineWidth = point.thickness;
+                    tempCtx.lineCap = 'round';
+                    tempCtx.lineJoin = 'round';
+                    tempCtx.stroke();
+                }
+            });
+            
+            // Convert canvas to data URL and trigger download
+            const dataURL = tempCanvas.toDataURL('image/png');
+            const a = document.createElement('a');
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            a.download = `air-drawing-${timestamp}.png`;
+            a.href = dataURL;
+            a.click();
+            
+            statusText.textContent = 'Status: Drawing saved!';
+            setTimeout(() => {
+                statusText.textContent = 'Status: Ready! Hold SPACE to draw with index finger.';
+            }, 3000);
+        }
+        
+        // Initialize the application when the page loads
+        window.addEventListener('load', init);
+    </script>
+</body>
+</html>
+
+
+
