@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Air Drawing - Finger Tracking</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #1a1a1a;
+            font-family: Arial, sans-serif;
+            color: white;
+        }
+        .container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            position: relative;
+        }
+        .video-container {
+            position: relative;
+            margin-bottom: 20px;
+        }
+        #video {
+            transform: scaleX(-1);
+            border-radius: 8px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.5);
+        }
+        #canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            transform: scaleX(-1);
+            border-radius: 8px;
+        }
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+        button {
+            padding: 10px 15px;
+            background-color: #4CAF50;
+            border: none;
+            border-radius: 4px;
+            color: white;
+            font-size: 16px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        .status {
+            margin-top: 10px;
+            padding: 8px;
+            border-radius: 4px;
+            background-color: rgba(0, 0, 0, 0.5);
+        }
+        .color-picker {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .color-option {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            cursor: pointer;
+            border: 2px solid transparent;
+        }
+        .color-option.active {
+            border: 2px solid white;
+        }
+        .thickness-slider {
+            margin: 10px 0;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .help-text {
+            position: absolute;
+            bottom: 10px;
+            background-color: rgba(0, 0, 0,.7);
+            padding: 10px;
+            border-radius: 4px;
+            max-width: 400px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Air Drawing</h1>
+        <div class="video-container">
+            <video id="video" width="640" height="480" autoplay></video>
+            <canvas id="canvas" width="640" height="480"></canvas>
+        </div>
+        <div class="status" id="status">Status: Getting camera ready...</div>
+        
+        <div class="color-picker">
+            <div class="color-option active" style="background-color: #ff0000;" data-color="#ff0000"></div>
+            <div class="color-option" style="background-color: #00ff00;" data-color="#00ff00"></div>
+            <div class="color-option" style="background-color: #0000ff;" data-color="#0000ff"></div>
+            <div class="color-option" style="background-color: #ffff00;" data-color="#ffff00"></div>
+            <div class="color-option" style="background-color: #ff00ff;" data-color="#ff00ff"></div>
+        </div>
+        
+        <div class="thickness-slider">
+            <span>Line Thickness:</span>
+            <input type="range" id="thickness" min="1" max="20" value="5">
+            <span id="thickness-value">5px</span>
+        </div>
+        
+        <div class="controls">
+            <button id="clearBtn">Clear Canvas</button>
+            <button id="saveBtn">Save Drawing</button>
+        </div>
+        
+        <div class="help-text">
+            <p>Hold SPACE to draw with your index finger. Release to stop drawing. Use the color picker to change colors.</p>
+        </div>
+    </div>
+
+    <!-- Make sure we're loading MediaPipe from CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    
+    <script>
+        // DOM Elements
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const statusText = document.getElementById('status');
+        const clearBtn = document.getElementById('clearBtn');
+        const saveBtn = document.getElementById('saveBtn');
+        const thicknessSlider = document.getElementById('thickness');
+        const thicknessValue = document.getElementById('thickness-value');
+        const colorOptions = document.querySelectorAll('.color-option');
+        
+        // Drawing settings
+        let isDrawing = false;
+        let isSpacePressed = false;
+        let currentColor = '#ff0000';
+        let lineThickness = 5;
+        let lastX = 0;
+        let lastY = 0;
+        let paths = [];
+        let currentPath = [];
+        
+        // MediaPipe Hands
+        let hands;
+        let camera;
+        let indexFingerPosition = null;
+        
+        // Initialize the application
+        async function init() {
+            statusText.textContent = 'Status: Loading hand tracking model...';
+            
+            try {
+                // Initialize MediaPipe Hands
+                hands = new Hands({
+                    locateFile: (file) => {
+                        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+                    }
+                });
+                
+                hands.setOptions({
+                    maxNumHands: 1,
+                    modelComplexity: 1,
+                    minDetectionConfidence: 0.5,
+                    minTrackingConfidence: 0.5
+                });
+                
+                hands.onResults(onHandResults);
+                
+                // Start camera
+                camera = new Camera(video, {
+                    onFrame: async () => {
+                        await hands.send({image: video});
+                    },
+                    width: 640,
+                    height: 480
+                });
+                
+                camera.start()
+                    .then(() => {
+                        statusText.textContent = 'Status: Ready! Hold SPACE to draw with index finger.';
+                    })
+                    .catch(error => {
+                        statusText.textContent = `Status: Camera error - ${error.message}`;
+                        console.error('Camera error:', error);
+                    });
+            } catch (error) {
+                statusText.textContent = `Status: Error - ${error.message}`;
+                console.error('Error initializing:', error);
+            }
+        }
+        
+        // Process hand results from MediaPipe
+        function onHandResults(results) {
+            // Clear canvas for drawing
+            drawCanvas();
+            
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                // Get the index finger tip (landmark 8)
+                const hand = results.multiHandLandmarks[0];
+                const indexFinger = hand[8];
+                
+                // Convert normalized coordinates to canvas coordinates
+                const x = indexFinger.x * canvas.width;
+                const y = indexFinger.y * canvas.height;
+                
+                indexFingerPosition = { x, y };
+                
+                // If space is pressed, add to the current drawing path
+                if (isSpacePressed && indexFingerPosition) {
+                    if (!isDrawing) {
+                        // Start a new drawing segment
+                        isDrawing = true;
+                        lastX = indexFingerPosition.x;
+                        lastY = indexFingerPosition.y;
+                        
+                        // Start a new path
+                        currentPath = [{
+                            x: indexFingerPosition.x,
+                            y: indexFingerPosition.y,
+                            color: currentColor,
+                            thickness: lineThickness
+                        }];
+                    } else {
+                        // Continue the current path
+                        currentPath.push({
+                            x: indexFingerPosition.x,
+                            y: indexFingerPosition.y,
+                            color: currentColor,
+                            thickness: lineThickness
+                        });
+                    }
+                } else if (isDrawing) {
+                    // Finish the current path
+                    isDrawing = false;
+                    if (currentPath.length > 0) {
+                        paths.push([...currentPath]);
+                        currentPath = [];
+                    }
+                }
+            } else {
+                indexFingerPosition = null;
+                if (isDrawing) {
+                    isDrawing = false;
+                    if (currentPath.length > 0) {
+                        paths.push([...currentPath]);
+                        currentPath = [];
+                    }
+                }
+            }
+        }
+        
+        // Draw the current canvas state
+        function drawCanvas() {
+            // Clear the canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw previously saved paths
+            paths.forEach(path => {
+                if (path.length < 2) return;
+                
+                for (let i = 1; i < path.length; i++) {
+                    const point = path[i];
+                    const prevPoint = path[i - 1];
+                    
+                    ctx.beginPath();
+                    ctx.moveTo(prevPoint.x, prevPoint.y);
+                    ctx.lineTo(point.x, point.y);
+                    ctx.strokeStyle = point.color;
+                    ctx.lineWidth = point.thickness;
+                    ctx.lineCap = 'round';
+                    ctx.lineJoin = 'round';
+                    ctx.stroke();
+                }
+            });
+            
+            // Draw current path being created
+            if (currentPath.length > 1) {
+                for (let i = 1; i < currentPath.length; i++) {
+                    const point = currentPath[i];
+                    const prevPoint = currentPath[i - 1];
+                    
+                    ctx.beginPath();
+                    ctx.moveTo(prevPoint.x, prevPoint.y);
+                    ctx.lineTo(point.x, point.y);
+                    ctx.strokeStyle = point.color;
+                    ctx.lineWidth = point.thickness;
+                    ctx.lineCap = 'round';
+                    ctx.lineJoin = 'round';
+                    ctx.stroke();
+                }
+            }
+            
+            // Draw the current finger position if detected
+            if (indexFingerPosition) {
+                ctx.beginPath();
+                ctx.arc(indexFingerPosition.x, indexFingerPosition.y, 10, 0, Math.PI * 2);
+                ctx.fillStyle = isSpacePressed ? 'rgba(255, 0, 0, 0.7)' : 'rgba(0, 255, 0, 0.7)';
+                ctx.fill();
+            }
+        }
+        
+        // Event Listeners
+        window.addEventListener('keydown', (e) => {
+            if (e.code === 'Space' && !isSpacePressed) {
+                isSpacePressed = true;
+                e.preventDefault();
+            }
+        });
+        
+        window.addEventListener('keyup', (e) => {
+            if (e.code === 'Space') {
+                isSpacePressed = false;
+                if (isDrawing) {
+                    isDrawing = false;
+                    if (currentPath.length > 0) {
+                        paths.push([...currentPath]);
+                        currentPath = [];
+                    }
+                }
+                e.preventDefault();
+            }
+        });
+        
+        clearBtn.addEventListener('click', () => {
+            paths = [];
+            currentPath = [];
+            isDrawing = false;
+            drawCanvas();
+        });
+        
+        saveBtn.addEventListener('click', () => {
+            const link = document.createElement('a');
+            link.download = 'air-drawing.png';
+            link.href = canvas.toDataURL();
+            link.click();
+        });
+        
+        thicknessSlider.addEventListener('input', () => {
+            lineThickness = parseInt(thicknessSlider.value);
+            thicknessValue.textContent = `${lineThickness}px`;
+        });
+        
+        colorOptions.forEach(option => {
+            option.addEventListener('click', () => {
+                // Remove active class from all options
+                colorOptions.forEach(opt => opt.classList.remove('active'));
+                
+                // Add active class to selected option
+                option.classList.add('active');
+                
+                // Set current color
+                currentColor = option.getAttribute('data-color');
+            });
+        });
+        
+        // Initialize the application when page loads
+        window.addEventListener('DOMContentLoaded', init);
+    </script>
+</body>
+</html>
