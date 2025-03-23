@@ -1,0 +1,1726 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Air Drawing Whiteboard</title>
+    <!-- TensorFlow.js libraries for hand tracking -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/handpose"></script>
+    <!-- Font Awesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --primary-color: #3498db;
+            --secondary-color: #2ecc71;
+            --background-color: #f8f9fa;
+            --toolbar-bg: #ffffff;
+            --button-hover: #e9ecef;
+            --shadow-color: rgba(0, 0, 0, 0.1);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Arial', sans-serif;
+        }
+
+        body {
+            background-color: var(--background-color);
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .app-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* Loading overlay */
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(255, 255, 255, 0.9);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+
+        .loader {
+            border: 5px solid #f3f3f3;
+            border-top: 5px solid var(--primary-color);
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin-bottom: 20px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Toolbar styles */
+        .toolbar {
+            background-color: var(--toolbar-bg);
+            padding: 10px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            box-shadow: 0 2px 5px var(--shadow-color);
+            z-index: 10;
+            flex-wrap: wrap;
+        }
+
+        .toolbar-section {
+            display: flex;
+            gap: 5px;
+            align-items: center;
+            padding: 0 10px;
+            border-right: 1px solid #eee;
+        }
+
+        .toolbar-section:last-child {
+            border-right: none;
+        }
+
+        button {
+            background-color: var(--toolbar-bg);
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 8px 12px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 5px;
+            transition: all 0.2s;
+        }
+
+        button:hover {
+            background-color: var(--button-hover);
+        }
+
+        button.active {
+            background-color: var(--primary-color);
+            color: white;
+        }
+
+        .color-picker {
+            width: 30px;
+            height: 30px;
+            padding: 0;
+            border: none;
+            border-radius: 50%;
+            overflow: hidden;
+            cursor: pointer;
+        }
+
+        .color-picker input {
+            width: 150%;
+            height: 150%;
+            transform: translate(-17%, -17%);
+            cursor: pointer;
+        }
+
+        .brush-size {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .brush-size input {
+            width: 80px;
+        }
+
+        /* Canvas container */
+        .canvas-container {
+            position: relative;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        #drawingCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            background-color: transparent;
+            cursor: crosshair;
+        }
+
+        #mediaCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: -1;
+        }
+
+        #videoFeed {
+            display: none;
+        }
+
+        /* Fingertip indicator */
+        .fingertip-indicator {
+            position: absolute;
+            width: 15px;
+            height: 15px;
+            border-radius: 50%;
+            background-color: rgba(255, 0, 0, 0.7);
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            display: none;
+            box-shadow: 0 0 5px rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+        }
+
+        /* Status indicator */
+        .status-indicator {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            padding: 5px 10px;
+            background-color: rgba(0, 0, 0, 0.7);
+            color: white;
+            border-radius: 5px;
+            font-size: 12px;
+            z-index: 100;
+            pointer-events: none;
+        }
+
+        /* Image controls */
+        .image-controls {
+            position: absolute;
+            top: 5px;
+            left: 5px;
+            background-color: rgba(255, 255, 255, 0.9);
+            border-radius: 5px;
+            padding: 5px;
+            display: none;
+            z-index: 100;
+        }
+
+        /* Canvas size modal */
+        .modal-backdrop {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+            display: none;
+        }
+
+        .modal-content {
+            background-color: white;
+            padding: 20px;
+            border-radius: 5px;
+            min-width: 300px;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .modal-body {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .size-option {
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        .size-option:hover, .size-option.selected {
+            background-color: var(--button-hover);
+        }
+
+        .size-option.selected {
+            border-color: var(--primary-color);
+        }
+
+        .modal-footer {
+            display: flex;
+            justify-content: flex-end;
+            margin-top: 15px;
+            gap: 10px;
+        }
+
+        /* Toast notification */
+        .toast-container {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            z-index: 1000;
+        }
+
+        .toast {
+            background-color: rgba(46, 204, 113, 0.9);
+            color: white;
+            padding: 10px 20px;
+            border-radius: 5px;
+            margin-top: 10px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+            opacity: 0;
+            transform: translateY(20px);
+            transition: all 0.3s ease;
+        }
+
+        .toast.show {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        /* Color picker preview */
+        #eyedropperCanvas {
+            display: none;
+            position: absolute;
+            pointer-events: none;
+            z-index: 900;
+            border: 1px solid black;
+            background-color: white;
+        }
+
+        /* Keyboard shortcuts help */
+        .keyboard-helper {
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            background-color: rgba(255, 255, 255, 0.9);
+            padding: 10px;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+            font-size: 12px;
+            max-width: 300px;
+            z-index: 100;
+            display: none;
+        }
+
+        .keyboard-helper h4 {
+            margin-bottom: 5px;
+        }
+
+        .keyboard-helper ul {
+            list-style-type: none;
+            padding-left: 0;
+        }
+
+        .keyboard-helper li {
+            margin-bottom: 3px;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .keyboard-helper kbd {
+            background-color: #f3f3f3;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+            padding: 2px 5px;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="loader"></div>
+        <p>Loading hand detection model...</p>
+    </div>
+
+    <div class="app-container">
+        <div class="toolbar">
+            <div class="toolbar-section">
+                <button id="cameraBtnToggle" title="Toggle camera feed">
+                    <i class="fas fa-camera"></i> Camera
+                </button>
+            </div>
+            
+            <div class="toolbar-section">
+                <button id="drawBtn" class="active" title="Draw mode">
+                    <i class="fas fa-pencil-alt"></i> Draw
+                </button>
+                <button id="eraserBtn" title="Eraser mode">
+                    <i class="fas fa-eraser"></i> Erase
+                </button>
+                <button id="selectBtn" title="Select mode">
+                    <i class="fas fa-mouse-pointer"></i> Select
+                </button>
+                <div class="color-picker">
+                    <input type="color" id="colorPicker" value="#000000" title="Choose color">
+                </div>
+                <button id="colorPickerBtn" title="Pick color from canvas">
+                    <i class="fas fa-eye-dropper"></i>
+                </button>
+                <div class="brush-size">
+                    <input type="range" id="brushSize" min="1" max="50" value="5" title="Adjust brush size">
+                    <span id="brushSizeValue">5px</span>
+                </div>
+            </div>
+
+            <div class="toolbar-section">
+                <button id="undoBtn" disabled title="Undo">
+                    <i class="fas fa-undo"></i> Undo
+                </button>
+                <button id="redoBtn" disabled title="Redo">
+                    <i class="fas fa-redo"></i> Redo
+                </button>
+                <button id="clearBtn" title="Clear canvas">
+                    <i class="fas fa-trash"></i> Clear
+                </button>
+            </div>
+
+            <div class="toolbar-section">
+                <button id="uploadImgBtn" title="Upload images">
+                    <i class="fas fa-image"></i> Add Image
+                </button>
+                <input type="file" id="imageUpload" accept="image/*" style="display: none;" multiple>
+                <button id="canvasSizeBtn" title="Change canvas size">
+                    <i class="fas fa-expand"></i> Canvas Size
+                </button>
+            </div>
+
+            <div class="toolbar-section">
+                <button id="exportBtn" title="Export drawing">
+                    <i class="fas fa-download"></i> Export
+                </button>
+                <button id="helpBtn" title="Keyboard shortcuts">
+                    <i class="fas fa-keyboard"></i> Shortcuts
+                </button>
+            </div>
+        </div>
+
+        <div class="canvas-container" id="canvasContainer">
+            <canvas id="drawingCanvas"></canvas>
+            <canvas id="mediaCanvas"></canvas>
+            <video id="videoFeed" autoplay playsinline></video>
+            <div class="fingertip-indicator" id="fingertipIndicator"></div>
+            <div class="status-indicator" id="statusIndicator">Drawing: Off</div>
+            <canvas id="eyedropperCanvas" width="100" height="100"></canvas>
+        </div>
+    </div>
+
+    <div class="image-controls" id="imageControls">
+        <button id="imageDeleteBtn" title="Delete image"><i class="fas fa-trash"></i></button>
+        <button id="imageBringFrontBtn" title="Bring to front"><i class="fas fa-arrow-up"></i></button>
+        <button id="imageSendBackBtn" title="Send to back"><i class="fas fa-arrow-down"></i></button>
+    </div>
+
+    <div class="modal-backdrop" id="canvasSizeModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Canvas Size</h3>
+                <button id="closeModalBtn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="size-option" data-size="mid">
+                    <strong>Medium:</strong> 1920 x 1080
+                </div>
+                <div class="size-option" data-size="large">
+                    <strong>Large:</strong> 3840 x 2160
+                </div>
+                <div class="size-option selected" data-size="unlimited">
+                    <strong>Unlimited:</strong> Infinite canvas
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="cancelSizeBtn">Cancel</button>
+                <button id="applySizeBtn">Apply</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="toast-container" id="toastContainer"></div>
+
+    <div class="keyboard-helper" id="keyboardHelper">
+        <h4>Keyboard Shortcuts</h4>
+        <ul>
+            <li><span><kbd>Space</kbd> (hold)</span> <span>Enable drawing</span></li>
+            <li><span><kbd>M</kbd> (hold)</span> <span>Move/drag drawings</span></li>
+            <li><span><kbd>E</kbd></span> <span>Toggle eraser</span></li>
+            <li><span><kbd>B</kbd></span> <span>Toggle brush</span></li>
+            <li><span><kbd>I</kbd></span> <span>Color picker</span></li>
+            <li><span><kbd>S</kbd></span> <span>Select mode</span></li>
+            <li><span><kbd>Ctrl</kbd>+<kbd>Z</kbd></span> <span>Undo</span></li>
+            <li><span><kbd>Ctrl</kbd>+<kbd>Y</kbd></span> <span>Redo</span></li>
+            <li><span><kbd>Ctrl</kbd>+<kbd>C</kbd></span> <span>Copy selection</span></li>
+            <li><span><kbd>Ctrl</kbd>+<kbd>V</kbd></span> <span>Paste</span></li>
+            <li><span><kbd>Delete</kbd></span> <span>Delete selection</span></li>
+            <li><span><kbd>+</kbd>/<kbd>-</kbd></span> <span>Adjust brush size</span></li>
+            <li><span><kbd>H</kbd></span> <span>Toggle this help</span></li>
+        </ul>
+    </div>
+
+    <script>
+        // Global variables
+        let drawingCanvas, mediaCanvas, videoFeed, drawingCtx, mediaCtx;
+        let isDrawing = false;
+        let isSpacePressed = false;
+        let isMPressed = false;
+        let isMobileDrawing = false;
+        let lastX = 0;
+        let lastY = 0;
+        let brushSize = 5;
+        let brushColor = "#000000";
+        let mode = "draw"; // draw, erase, select, eyedropper
+        let handDetectionActive = false;
+        let handposeModel = null;
+        let fingerPosition = { x: 0, y: 0 };
+        let images = []; // Array to store uploaded images
+        let selectedImage = null;
+        let offsetX, offsetY, dragStartX, dragStartY;
+        let undoStack = [];
+        let redoStack = [];
+        let canvasOffset = { x: 0, y: 0 }; // For panning the canvas
+        let canvasPanning = false;
+        let viewportWidth, viewportHeight;
+        let canvasSize = "unlimited"; // mid, large, unlimited
+        let clipboard = null;
+        let videoStream = null;
+
+        // Initialize the application
+        document.addEventListener('DOMContentLoaded', async function() {
+            // Setup canvas
+            drawingCanvas = document.getElementById('drawingCanvas');
+            mediaCanvas = document.getElementById('mediaCanvas');
+            videoFeed = document.getElementById('videoFeed');
+            drawingCtx = drawingCanvas.getContext('2d');
+            mediaCtx = mediaCanvas.getContext('2d');
+            
+            // Size the canvases
+            resizeCanvases();
+            
+            // Setup event listeners
+            setupEventListeners();
+            
+            // Load handpose model
+            try {
+                handposeModel = await handpose.load();
+                showToast("Hand detection model loaded successfully!");
+                document.getElementById('loadingOverlay').style.display = 'none';
+            } catch (error) {
+                console.error("Error loading handpose model:", error);
+                showToast("Failed to load hand detection model. Using mouse only mode.", "error");
+                document.getElementById('loadingOverlay').style.display = 'none';
+            }
+            
+            // Save initial canvas state for undo
+            saveCanvasState();
+        });
+
+        // Function to resize canvases
+        function resizeCanvases() {
+            viewportWidth = window.innerWidth;
+            viewportHeight = window.innerHeight - document.querySelector('.toolbar').offsetHeight;
+            
+            const container = document.getElementById('canvasContainer');
+            container.style.width = `${viewportWidth}px`;
+            container.style.height = `${viewportHeight}px`;
+            
+            if (canvasSize === "mid") {
+                drawingCanvas.width = 1920;
+                drawingCanvas.height = 1080;
+                mediaCanvas.width = 1920;
+                mediaCanvas.height = 1080;
+            } else if (canvasSize === "large") {
+                drawingCanvas.width = 3840;
+                drawingCanvas.height = 2160;
+                mediaCanvas.width = 3840;
+                mediaCanvas.height = 2160;
+            } else { // unlimited
+                drawingCanvas.width = Math.max(viewportWidth * 3, 3840);
+                drawingCanvas.height = Math.max(viewportHeight * 3, 2160);
+                mediaCanvas.width = drawingCanvas.width;
+                mediaCanvas.height = drawingCanvas.height;
+                
+                // Center the viewport
+                if (canvasOffset.x === 0 && canvasOffset.y === 0) {
+                    canvasOffset.x = (drawingCanvas.width / 2) - (viewportWidth / 2);
+                    canvasOffset.y = (drawingCanvas.height / 2) - (viewportHeight / 2);
+                }
+            }
+            
+            // Position canvases
+            updateCanvasPosition();
+            
+            // Redraw everything
+            redrawMedia();
+            redrawDrawing();
+        }
+
+        // Update canvas position based on offset
+        function updateCanvasPosition() {
+            drawingCanvas.style.transform = `translate(${-canvasOffset.x}px, ${-canvasOffset.y}px)`;
+            mediaCanvas.style.transform = `translate(${-canvasOffset.x}px, ${-canvasOffset.y}px)`;
+        }
+
+        // Setup all event listeners
+        function setupEventListeners() {
+            // Window resize
+            window.addEventListener('resize', resizeCanvases);
+            
+            // Canvas mouse events
+            drawingCanvas.addEventListener('mousedown', handleMouseDown);
+            drawingCanvas.addEventListener('mousemove', handleMouseMove);
+            window.addEventListener('mouseup', handleMouseUp);
+            drawingCanvas.addEventListener('mouseleave', handleMouseLeave);
+            
+            // Canvas touch events for mobile
+            drawingCanvas.addEventListener('touchstart', handleTouchStart, { passive: false });
+            drawingCanvas.addEventListener('touchmove', handleTouchMove, { passive: false });
+            drawingCanvas.addEventListener('touchend', handleTouchEnd, { passive: false });
+            
+            // Keyboard events
+            window.addEventListener('keydown', handleKeyDown);
+            window.addEventListener('keyup', handleKeyUp);
+            
+            // Toolbar buttons
+            document.getElementById('cameraBtnToggle').addEventListener('click', toggleCamera);
+            document.getElementById('drawBtn').addEventListener('click', () => setMode('draw'));
+            document.getElementById('eraserBtn').addEventListener('click', () => setMode('erase'));
+            document.getElementById('selectBtn').addEventListener('click', () => setMode('select'));
+            document.getElementById('colorPickerBtn').addEventListener('click', () => setMode('eyedropper'));
+            document.getElementById('colorPicker').addEventListener('input', (e) => {
+                brushColor = e.target.value;
+            });
+            document.getElementById('brushSize').addEventListener('input', (e) => {
+                brushSize = parseInt(e.target.value);
+                document.getElementById('brushSizeValue').textContent = `${brushSize}px`;
+            });
+            document.getElementById('undoBtn').addEventListener('click', undo);
+            document.getElementById('redoBtn').addEventListener('click', redo);
+            document.getElementById('clearBtn').addEventListener('click', clearCanvas);
+            document.getElementById('uploadImgBtn').addEventListener('click', () => {
+                document.getElementById('imageUpload').click();
+            });
+            document.getElementById('imageUpload').addEventListener('change', handleImageUpload);
+            document.getElementById('canvasSizeBtn').addEventListener('click', () => {
+                document.getElementById('canvasSizeModal').style.display = 'flex';
+            });
+            document.getElementById('exportBtn').addEventListener('click', exportCanvas);
+            document.getElementById('helpBtn').addEventListener('click', toggleHelp);
+            
+            // Modal events
+            document.getElementById('closeModalBtn').addEventListener('click', () => {
+                document.getElementById('canvasSizeModal').style.display = 'none';
+            });
+            document.getElementById('cancelSizeBtn').addEventListener('click', () => {
+                document.getElementById('canvasSizeModal').style.display = 'none';
+            });
+            document.getElementById('applySizeBtn').addEventListener('click', applyCanvasSize);
+            
+            // Size options
+            document.querySelectorAll('.size-option').forEach(option => {
+                option.addEventListener('click', (e) => {
+                    document.querySelectorAll('.size-option').forEach(opt => {
+                        opt.classList.remove('selected');
+                    });
+                    e.currentTarget.classList.add('selected');
+                });
+            });
+            
+            // Image control buttons
+            document.getElementById('imageDeleteBtn').addEventListener('click', deleteSelectedImage);
+            document.getElementById('imageBringFrontBtn').addEventListener('click', bringImageToFront);
+            document.getElementById('imageSendBackBtn').addEventListener('click', sendImageToBack);
+            
+            // Prevent context menu
+            drawingCanvas.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                return false;
+            });
+        }
+
+        // Mouse event handlers
+        function handleMouseDown(e) {
+            if (mode === 'eyedropper') {
+                pickColorFromCanvas(e.clientX, e.clientY);
+                return;
+            }
+            
+            const x = e.clientX + canvasOffset.x;
+            const y = e.clientY + canvasOffset.y;
+            
+            // Check if we're panning the canvas (middle mouse button or right mouse button)
+            if (e.button === 1 || e.button === 2 || isMPressed) {
+                canvasPanning = true;
+                dragStartX = e.clientX;
+                dragStartY = e.clientY;
+                drawingCanvas.style.cursor = 'grabbing';
+                return;
+            }
+            
+            // Handle different modes
+            if (mode === 'select') {
+                handleSelectionStart(x, y);
+            } else if ((isSpacePressed || mode === 'draw' || mode === 'erase') && e.button === 0) {
+                isDrawing = true;
+                lastX = x;
+                lastY = y;
+                drawingCtx.beginPath();
+                drawingCtx.moveTo(lastX, lastY);
+                
+                // For single dot
+                drawingCtx.lineCap = 'round';
+                drawingCtx.lineJoin = 'round';
+                drawingCtx.lineWidth = brushSize;
+                drawingCtx.strokeStyle = mode === 'erase' ? '#FFFFFF' : brushColor;
+                drawingCtx.globalCompositeOperation = mode === 'erase' ? 'destination-out' : 'source-over';
+                drawingCtx.lineTo(lastX + 0.1, lastY + 0.1);
+                drawingCtx.stroke();
+            }
+        }
+
+        function handleMouseMove(e) {
+            const x = e.clientX + canvasOffset.x;
+            const y = e.clientY + canvasOffset.y;
+            
+            // Update status indicator for eyedropper mode
+            if (mode === 'eyedropper') {
+                showEyedropperPreview(e.clientX, e.clientY);
+                return;
+            }
+            
+            // Handle canvas panning
+            if (canvasPanning) {
+                const dx = e.clientX - dragStartX;
+                const dy = e.clientY - dragStartY;
+                
+                canvasOffset.x -= dx;
+                canvasOffset.y -= dy;
+                
+                // Constrain panning
+                constrainCanvasPanning();
+                
+                updateCanvasPosition();
+                dragStartX = e.clientX;
+                dragStartY = e.clientY;
+                return;
+            }
+            
+            // Handle drawing or selection
+            if (isDrawing && (isSpacePressed || mode === 'draw' || mode === 'erase')) {
+                draw(x, y);
+            } else if (mode === 'select' && selectedImage && selectedImage.isDragging) {
+                // Move selected image
+                moveSelectedImage(x, y);
+            }
+        }
+
+        function handleMouseUp(e) {
+            if (canvasPanning) {
+                canvasPanning = false;
+                drawingCanvas.style.cursor = mode === 'select' ? 'default' : 'crosshair';
+                return;
+            }
+            
+            if (isDrawing) {
+                isDrawing = false;
+                saveCanvasState();
+            }
+            
+            if (mode === 'select' && selectedImage && selectedImage.isDragging) {
+                // End moving the selected image
+                selectedImage.isDragging = false;
+                saveCanvasState();
+            }
+        }
+
+        function handleMouseLeave(e) {
+            // Hide eyedropper preview when mouse leaves canvas
+            if (mode === 'eyedropper') {
+                document.getElementById('eyedropperCanvas').style.display = 'none';
+            }
+        }
+
+        // Touch event handlers for mobile
+        function handleTouchStart(e) {
+            e.preventDefault();
+            const touch = e.touches[0];
+            const x = touch.clientX + canvasOffset.x;
+            const y = touch.clientY + canvasOffset.y;
+            
+            if (mode === 'eyedropper') {
+                pickColorFromCanvas(touch.clientX, touch.clientY);
+                return;
+            }
+            
+            if (e.touches.length === 2) {
+                // Two finger gesture for panning
+                canvasPanning = true;
+                dragStartX = touch.clientX;
+                dragStartY = touch.clientY;
+                return;
+            }
+            
+            if (mode === 'select') {
+                handleSelectionStart(x, y);
+            } else {
+                isMobileDrawing = true;
+                lastX = x;
+                lastY = y;
+                drawingCtx.beginPath();
+                drawingCtx.moveTo(lastX, lastY);
+                
+                // For single dot
+                drawingCtx.lineCap = 'round';
+                drawingCtx.lineJoin = 'round';
+                drawingCtx.lineWidth = brushSize;
+                drawingCtx.strokeStyle = mode === 'erase' ? '#FFFFFF' : brushColor;
+                drawingCtx.globalCompositeOperation = mode === 'erase' ? 'destination-out' : 'source-over';
+                drawingCtx.lineTo(lastX + 0.1, lastY + 0.1);
+                drawingCtx.stroke();
+            }
+        }
+
+        function handleTouchMove(e) {
+            e.preventDefault();
+            const touch = e.touches[0];
+            const x = touch.clientX + canvasOffset.x;
+            const y = touch.clientY + canvasOffset.y;
+            
+            if (canvasPanning && e.touches.length === 2) {
+                // Two finger panning
+                const dx = touch.clientX - dragStartX;
+                const dy = touch.clientY - dragStartY;
+                
+                canvasOffset.x -= dx;
+                canvasOffset.y -= dy;
+                
+                // Constrain panning
+                constrainCanvasPanning();
+                
+                updateCanvasPosition();
+                dragStartX = touch.clientX;
+                dragStartY = touch.clientY;
+                return;
+            }
+            
+            if (isMobileDrawing) {
+                draw(x, y);
+            } else if (mode === 'select' && selectedImage && selectedImage.isDragging) {
+                moveSelectedImage(x, y);
+            }
+        }
+
+        function handleTouchEnd(e) {
+            e.preventDefault();
+            
+            if (canvasPanning) {
+                canvasPanning = false;
+                return;
+            }
+            
+            if (isMobileDrawing) {
+                isMobileDrawing = false;
+                saveCanvasState();
+            }
+            
+            if (mode === 'select' && selectedImage && selectedImage.isDragging) {
+                selectedImage.isDragging = false;
+                saveCanvasState();
+            }
+        }
+
+        // Constrain canvas panning to prevent going out of bounds
+        function constrainCanvasPanning() {
+            if (canvasSize === "unlimited") {
+                canvasOffset.x = Math.max(0, Math.min(canvasOffset.x, drawingCanvas.width - viewportWidth));
+                canvasOffset.y = Math.max(0, Math.min(canvasOffset.y, drawingCanvas.height - viewportHeight));
+            } else {
+                const maxOffsetX = Math.max(0, drawingCanvas.width - viewportWidth);
+                const maxOffsetY = Math.max(0, drawingCanvas.height - viewportHeight);
+                canvasOffset.x = Math.max(0, Math.min(canvasOffset.x, maxOffsetX));
+                canvasOffset.y = Math.max(0, Math.min(canvasOffset.y, maxOffsetY));
+            }
+        }
+
+        // Keyboard event handlers
+        function handleKeyDown(e) {
+            // Don't handle keyboard shortcuts when inputs have focus
+            if (e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
+            
+            switch(e.key) {
+                case ' ':
+                    if (!isSpacePressed) {
+                        isSpacePressed = true;
+                        document.getElementById('statusIndicator').textContent = "Drawing: On";
+                    }
+                    e.preventDefault(); // Prevent page scrolling with spacebar
+                    break;
+                case 'm':
+                case 'M':
+                    isMPressed = true;
+                    drawingCanvas.style.cursor = 'grab';
+                    break;
+                case 'e':
+                case 'E':
+                    if (!e.ctrlKey) setMode('erase');
+                    break;
+                case 'b':
+                case 'B':
+                    setMode('draw');
+                    break;
+                case 'i':
+                case 'I':
+                    setMode('eyedropper');
+                    break;
+                case 's':
+                case 'S':
+                    if (!e.ctrlKey) setMode('select');
+                    break;
+                case 'z':
+                case 'Z':
+                    if (e.ctrlKey) {
+                        e.preventDefault();
+                        undo();
+                    }
+                    break;
+                case 'y':
+                case 'Y':
+                    if (e.ctrlKey) {
+                        e.preventDefault();
+                        redo();
+                    }
+                    break;
+                case 'c':
+                case 'C':
+                    if (e.ctrlKey && selectedImage) {
+                        e.preventDefault();
+                        copySelectedImage();
+                    }
+                    break;
+                case 'v':
+                case 'V':
+                    if (e.ctrlKey && clipboard) {
+                        e.preventDefault();
+                        pasteFromClipboard();
+                    }
+                    break;
+                case 'Delete':
+                    if (selectedImage) {
+                        deleteSelectedImage();
+                    }
+                    break;
+                case 'h':
+                case 'H':
+                    toggleHelp();
+                    break;
+                case '+':
+                case '=': // For keyboards where = and + share the same key
+                    if (brushSize < 50) {
+                        brushSize += 1;
+                        document.getElementById('brushSize').value = brushSize;
+                        document.getElementById('brushSizeValue').textContent = `${brushSize}px`;
+                    }
+                    break;
+                case '-':
+                case '_': // For keyboards where - and _ share the same key
+                    if (brushSize > 1) {
+                        brushSize -= 1;
+                        document.getElementById('brushSize').value = brushSize;
+                        document.getElementById('brushSizeValue').textContent = `${brushSize}px`;
+                    }
+                    break;
+            }
+        }
+
+        function handleKeyUp(e) {
+            switch(e.key) {
+                case ' ':
+                    isSpacePressed = false;
+                    document.getElementById('statusIndicator').textContent = "Drawing: Off";
+                    if (isDrawing) {
+                        isDrawing = false;
+                        saveCanvasState();
+                    }
+                    break;
+                case 'm':
+                case 'M':
+                    isMPressed = false;
+                    drawingCanvas.style.cursor = mode === 'select' ? 'default' : 'crosshair';
+                    if (canvasPanning) {
+                        canvasPanning = false;
+                    }
+                    break;
+            }
+        }
+
+        // Drawing functions
+        function draw(x, y) {
+            drawingCtx.lineCap = 'round';
+            drawingCtx.lineJoin = 'round';
+            drawingCtx.lineWidth = brushSize;
+            drawingCtx.strokeStyle = mode === 'erase' ? '#FFFFFF' : brushColor;
+            drawingCtx.globalCompositeOperation = mode === 'erase' ? 'destination-out' : 'source-over';
+            
+            drawingCtx.lineTo(x, y);
+            drawingCtx.stroke();
+            drawingCtx.beginPath();
+            drawingCtx.moveTo(x, y);
+            
+            lastX = x;
+            lastY = y;
+        }
+
+        // Set drawing mode (draw, erase, select, eyedropper)
+        function setMode(newMode) {
+            mode = newMode;
+            
+            // Update UI
+            document.getElementById('drawBtn').classList.toggle('active', mode === 'draw');
+            document.getElementById('eraserBtn').classList.toggle('active', mode === 'erase');
+            document.getElementById('selectBtn').classList.toggle('active', mode === 'select');
+            document.getElementById('colorPickerBtn').classList.toggle('active', mode === 'eyedropper');
+            
+            // Update cursor
+            if (mode === 'select') {
+                drawingCanvas.style.cursor = 'default';
+            } else if (mode === 'eyedropper') {
+                drawingCanvas.style.cursor = 'crosshair';
+                document.getElementById('eyedropperCanvas').style.display = 'block';
+            } else {
+                drawingCanvas.style.cursor = 'crosshair';
+                document.getElementById('eyedropperCanvas').style.display = 'none';
+            }
+            
+            // Deselect any selected image
+            if (mode !== 'select' && selectedImage) {
+                selectedImage = null;
+                document.getElementById('imageControls').style.display = 'none';
+                redrawMedia();
+            }
+        }
+
+        // Camera functions
+        async function toggleCamera() {
+            if (videoStream) {
+                // Turn off camera
+                videoStream.getTracks().forEach(track => track.stop());
+                videoFeed.srcObject = null;
+                videoStream = null;
+                handDetectionActive = false;
+                document.getElementById('fingertipIndicator').style.display = 'none';
+                showToast("Camera deactivated");
+                return;
+            }
+            
+            try {
+                // Request camera access
+                videoStream = await navigator.mediaDevices.getUserMedia({
+                    video: { 
+                        facingMode: 'user',
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
+                    }
+                });
+                videoFeed.srcObject = videoStream;
+                await videoFeed.play();
+                
+                // Start hand detection if model is loaded
+                if (handposeModel) {
+                    handDetectionActive = true;
+                    detectHands();
+                    document.getElementById('cameraBtnToggle').classList.add('active');
+                    showToast("Camera activated - detecting hands");
+                }
+            } catch (error) {
+                console.error("Error accessing camera:", error);
+                showToast("Failed to access camera. Please check permissions.", "error");
+            }
+        }
+
+        // Hand detection function
+        async function detectHands() {
+            if (!handDetectionActive || !videoStream) return;
+            
+            if (videoFeed.readyState >= 2) {
+                try {
+                    const hands = await handposeModel.estimateHands(videoFeed);
+                    
+                    if (hands.length > 0) {
+                        // Get index finger tip position
+                        const indexFinger = hands[0].annotations.indexFinger[3];
+                        
+                        // Calculate position on canvas
+                        // Note: Need to flip horizontally for mirror effect
+                        const videoWidth = videoFeed.videoWidth;
+                        const videoHeight = videoFeed.videoHeight;
+                        
+                        // Scale from video dimensions to viewport
+                        const scaleX = viewportWidth / videoWidth;
+                        const scaleY = viewportHeight / videoHeight;
+                        const scale = Math.min(scaleX, scaleY);
+                        
+                        // Calculate centering offsets
+                        const offsetX = (viewportWidth - (videoWidth * scale)) / 2;
+                        const offsetY = (viewportHeight - (videoHeight * scale)) / 2;
+                        
+                        // Flip X coordinate for mirror effect and scale to viewport
+                        const x = viewportWidth - ((indexFinger[0] * scale) + offsetX);
+                        const y = (indexFinger[1] * scale) + offsetY;
+                        
+                        // Update fingertip indicator position
+                        const indicator = document.getElementById('fingertipIndicator');
+                        indicator.style.display = 'block';
+                        indicator.style.left = `${x}px`;
+                        indicator.style.top = `${y}px`;
+                        
+                        // Calculate the position on the actual canvas (including offset)
+                        fingerPosition.x = x + canvasOffset.x;
+                        fingerPosition.y = y + canvasOffset.y;
+                        
+                        // Draw if space is pressed
+                        if (isSpacePressed && !isDrawing) {
+                            isDrawing = true;
+                            lastX = fingerPosition.x;
+                            lastY = fingerPosition.y;
+                            drawingCtx.beginPath();
+                            drawingCtx.moveTo(lastX, lastY);
+                        } else if (isSpacePressed && isDrawing) {
+                            draw(fingerPosition.x, fingerPosition.y);
+                        } else if (!isSpacePressed && isDrawing) {
+                            isDrawing = false;
+                            saveCanvasState();
+                        }
+                    } else {
+                        document.getElementById('fingertipIndicator').style.display = 'none';
+                    }
+                } catch (error) {
+                    console.error("Hand detection error:", error);
+                }
+            }
+            
+            // Continue detection loop
+            requestAnimationFrame(detectHands);
+        }
+
+        // Image handling functions
+        function handleImageUpload(e) {
+            const files = e.target.files;
+            if (!files || files.length === 0) return;
+            
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                if (!file.type.match('image.*')) continue;
+                
+                const reader = new FileReader();
+                reader.onload = (function(file) {
+                    return function(e) {
+                        const img = new Image();
+                        img.onload = function() {
+                            // Calculate scaled dimensions to fit within canvas
+                            let width = img.width;
+                            let height = img.height;
+                            const maxSize = Math.min(drawingCanvas.width, drawingCanvas.height) * 0.8;
+                            
+                            if (width > height && width > maxSize) {
+                                height *= maxSize / width;
+                                width = maxSize;
+                            } else if (height > width && height > maxSize) {
+                                width *= maxSize / height;
+                                height = maxSize;
+                            }
+                            
+                            // Add image to images array
+                            const imageObj = {
+                                img: img,
+                                x: (drawingCanvas.width / 2) - (width / 2),
+                                y: (drawingCanvas.height / 2) - (height / 2),
+                                width: width,
+                                height: height,
+                                isDragging: false,
+                                dragOffsetX: 0,
+                                dragOffsetY: 0
+                            };
+                            
+                            images.push(imageObj);
+                            redrawMedia();
+                            saveCanvasState();
+                            showToast("Image added successfully");
+                        };
+                        img.src = e.target.result;
+                    };
+                })(file);
+                
+                reader.readAsDataURL(file);
+            }
+            
+            // Reset file input
+            e.target.value = '';
+        }
+
+        // Image selection functions
+        function handleSelectionStart(x, y) {
+            // Check if clicked on an image (in reverse order to get top-most image)
+            for (let i = images.length - 1; i >= 0; i--) {
+                const img = images[i];
+                if (
+                    x >= img.x && 
+                    x <= img.x + img.width && 
+                    y >= img.y && 
+                    y <= img.y + img.height
+                ) {
+                    selectedImage = img;
+                    selectedImage.isDragging = true;
+                    selectedImage.dragOffsetX = x - img.x;
+                    selectedImage.dragOffsetY = y - img.y;
+                    
+                    // Show image controls
+                    const controls = document.getElementById('imageControls');
+                    controls.style.display = 'flex';
+                    controls.style.top = `${img.y - canvasOffset.y - 30}px`;
+                    controls.style.left = `${img.x - canvasOffset.x}px`;
+                    
+                    // Bring selected image to front in display
+                    redrawMedia();
+                    return;
+                }
+            }
+            
+            // If click was not on an image, deselect
+            selectedImage = null;
+            document.getElementById('imageControls').style.display = 'none';
+            redrawMedia();
+        }
+
+        function moveSelectedImage(x, y) {
+            if (!selectedImage) return;
+            
+            selectedImage.x = x - selectedImage.dragOffsetX;
+            selectedImage.y = y - selectedImage.dragOffsetY;
+            
+            // Update image controls position
+            const controls = document.getElementById('imageControls');
+            controls.style.top = `${selectedImage.y - canvasOffset.y - 30}px`;
+            controls.style.left = `${selectedImage.x - canvasOffset.x}px`;
+            
+            redrawMedia();
+        }
+
+        function deleteSelectedImage() {
+            if (!selectedImage) return;
+            
+            const index = images.indexOf(selectedImage);
+            if (index !== -1) {
+                images.splice(index, 1);
+                selectedImage = null;
+                document.getElementById('imageControls').style.display = 'none';
+                redrawMedia();
+                saveCanvasState();
+                showToast("Image deleted");
+            }
+        }
+
+        function bringImageToFront() {
+            if (!selectedImage) return;
+            
+            const index = images.indexOf(selectedImage);
+            if (index !== -1) {
+                images.splice(index, 1);
+                images.push(selectedImage);
+                redrawMedia();
+                saveCanvasState();
+                showToast("Image brought to front");
+            }
+        }
+
+        function sendImageToBack() {
+            if (!selectedImage) return;
+            
+            const index = images.indexOf(selectedImage);
+            if (index !== -1) {
+                images.splice(index, 1);
+                images.unshift(selectedImage);
+                redrawMedia();
+                saveCanvasState();
+                showToast("Image sent to back");
+            }
+        }
+
+        function copySelectedImage() {
+            if (!selectedImage) return;
+            
+            clipboard = {
+                img: selectedImage.img,
+                width: selectedImage.width,
+                height: selectedImage.height
+            };
+            
+            showToast("Image copied to clipboard");
+        }
+
+        function pasteFromClipboard() {
+            if (!clipboard) return;
+            
+            const imageObj = {
+                img: clipboard.img,
+                x: (drawingCanvas.width / 2) - (clipboard.width / 2) + 20, // Offset a bit from center
+                y: (drawingCanvas.height / 2) - (clipboard.height / 2) + 20,
+                width: clipboard.width,
+                height: clipboard.height,
+                isDragging: false,
+                dragOffsetX: 0,
+                dragOffsetY: 0
+            };
+            
+            images.push(imageObj);
+            
+            // Select the pasted image
+            selectedImage = imageObj;
+            const controls = document.getElementById('imageControls');
+            controls.style.display = 'flex';
+            controls.style.top = `${imageObj.y - canvasOffset.y - 30}px`;
+            controls.style.left = `${imageObj.x - canvasOffset.x}px`;
+            
+            redrawMedia();
+            saveCanvasState();
+            showToast("Image pasted from clipboard");
+        }
+
+        // Canvas state management for undo/redo
+        function saveCanvasState() {
+            // Save drawing canvas
+            const drawingImageData = drawingCtx.getImageData(0, 0, drawingCanvas.width, drawingCanvas.height);
+            
+            // Save images array (deep copy)
+            const imagesCopy = images.map(img => ({
+                img: img.img,
+                x: img.x,
+                y: img.y,
+                width: img.width,
+                height: img.height,
+                isDragging: false,
+                dragOffsetX: 0,
+                dragOffsetY: 0
+            }));
+            
+            // Push state to undo stack
+            undoStack.push({
+                drawingData: drawingImageData,
+                images: imagesCopy
+            });
+            
+            // Limit undo stack size
+            if (undoStack.length > 30) {
+                undoStack.shift();
+            }
+            
+            // Clear redo stack
+            redoStack = [];
+            
+            // Update button states
+            document.getElementById('undoBtn').disabled = undoStack.length <= 1;
+            document.getElementById('redoBtn').disabled = redoStack.length === 0;
+        }
+
+        function undo() {
+            if (undoStack.length <= 1) return; // Keep at least one state
+            
+            // Save current state to redo stack
+            const currentDrawingData = drawingCtx.getImageData(0, 0, drawingCanvas.width, drawingCanvas.height);
+            const currentImagesCopy = images.map(img => ({
+                img: img.img,
+                x: img.x,
+                y: img.y,
+                width: img.width,
+                height: img.height,
+                isDragging: false,
+                dragOffsetX: 0,
+                dragOffsetY: 0
+            }));
+            
+            redoStack.push({
+                drawingData: currentDrawingData,
+                images: currentImagesCopy
+            });
+            
+            // Pop the current state and get the previous one
+            undoStack.pop();
+            const prevState = undoStack[undoStack.length - 1];
+            
+            // Restore previous state
+            drawingCtx.putImageData(prevState.drawingData, 0, 0);
+            images = prevState.images.map(img => ({
+                img: img.img,
+                x: img.x,
+                y: img.y,
+                width: img.width,
+                height: img.height,
+                isDragging: false,
+                dragOffsetX: 0,
+                dragOffsetY: 0
+            }));
+            
+            redrawMedia();
+            
+            // Update button states
+            document.getElementById('undoBtn').disabled = undoStack.length <= 1;
+            document.getElementById('redoBtn').disabled = redoStack.length === 0;
+            
+            // Clear selection
+            selectedImage = null;
+            document.getElementById('imageControls').style.display = 'none';
+            
+            showToast("Undo successful");
+        }
+
+        function redo() {
+            if (redoStack.length === 0) return;
+            
+            // Get state from redo stack
+            const nextState = redoStack.pop();
+            
+            // Save current state to undo stack
+            const currentDrawingData = drawingCtx.getImageData(0, 0, drawingCanvas.width, drawingCanvas.height);
+            const currentImagesCopy = images.map(img => ({
+                img: img.img,
+                x: img.x,
+                y: img.y,
+                width: img.width,
+                height: img.height,
+                isDragging: false,
+                dragOffsetX: 0,
+                dragOffsetY: 0
+            }));
+            
+            undoStack.push({
+                drawingData: currentDrawingData,
+                images: currentImagesCopy
+            });
+            
+            // Restore next state
+            drawingCtx.putImageData(nextState.drawingData, 0, 0);
+            images = nextState.images.map(img => ({
+                img: img.img,
+                x: img.x,
+                y: img.y,
+                width: img.width,
+                height: img.height,
+                isDragging: false,
+                dragOffsetX: 0,
+                dragOffsetY: 0
+            }));
+            
+            redrawMedia();
+            
+            // Update button states
+            document.getElementById('undoBtn').disabled = undoStack.length <= 1;
+            document.getElementById('redoBtn').disabled = redoStack.length === 0;
+            
+            // Clear selection
+            selectedImage = null;
+            document.getElementById('imageControls').style.display = 'none';
+            
+            showToast("Redo successful");
+        }
+
+        function redrawMedia() {
+            // Clear the media canvas
+            mediaCtx.clearRect(0, 0, mediaCanvas.width, mediaCanvas.height);
+            
+            // Draw video if active
+            if (videoStream && videoFeed.readyState >= 2) {
+                // Calculate dimensions to maintain aspect ratio
+                const videoWidth = videoFeed.videoWidth;
+                const videoHeight = videoFeed.videoHeight;
+                
+                // Scale to fill canvas while maintaining aspect ratio
+                const scaleX = mediaCanvas.width / videoWidth;
+                const scaleY = mediaCanvas.height / videoHeight;
+                const scale = Math.max(scaleX, scaleY);
+                
+                const scaledWidth = videoWidth * scale;
+                const scaledHeight = videoHeight * scale;
+                const x = (mediaCanvas.width - scaledWidth) / 2;
+                const y = (mediaCanvas.height - scaledHeight) / 2;
+                
+                mediaCtx.drawImage(videoFeed, x, y, scaledWidth, scaledHeight);
+            }
+            
+            // Draw images
+            for (let i = 0; i < images.length; i++) {
+                const img = images[i];
+                mediaCtx.drawImage(img.img, img.x, img.y, img.width, img.height);
+                
+                // Draw selection border if selected
+                if (img === selectedImage) {
+                    mediaCtx.strokeStyle = '#3498db';
+                    mediaCtx.lineWidth = 2;
+                    mediaCtx.setLineDash([5, 3]);
+                    mediaCtx.strokeRect(img.x, img.y, img.width, img.height);
+                    mediaCtx.setLineDash([]);
+                    
+                    // Draw resize handles (corners)
+                    const handleSize = 8;
+                    mediaCtx.fillStyle = '#3498db';
+                    
+                    // Top-left
+                    mediaCtx.fillRect(img.x - handleSize/2, img.y - handleSize/2, handleSize, handleSize);
+                    // Top-right
+                    mediaCtx.fillRect(img.x + img.width - handleSize/2, img.y - handleSize/2, handleSize, handleSize);
+                    // Bottom-left
+                    mediaCtx.fillRect(img.x - handleSize/2, img.y + img.height - handleSize/2, handleSize, handleSize);
+                    // Bottom-right
+                    mediaCtx.fillRect(img.x + img.width - handleSize/2, img.y + img.height - handleSize/2, handleSize, handleSize);
+                }
+            }
+        }
+
+        function redrawDrawing() {
+            // This function would redraw from saved data if needed
+            // Currently drawing canvas is persistent
+        }
+
+        function clearCanvas() {
+            if (confirm("Are you sure you want to clear the canvas? This cannot be undone.")) {
+                drawingCtx.clearRect(0, 0, drawingCanvas.width, drawingCanvas.height);
+                images = [];
+                selectedImage = null;
+                document.getElementById('imageControls').style.display = 'none';
+                redrawMedia();
+                saveCanvasState();
+                showToast("Canvas cleared");
+            }
+        }
+
+        // Color picker (eyedropper) functionality
+        function showEyedropperPreview(x, y) {
+            const eyedropperCanvas = document.getElementById('eyedropperCanvas');
+            const ctx = eyedropperCanvas.getContext('2d');
+            const zoomLevel = 10; // Magnification level
+            const previewSize = eyedropperCanvas.width;
+            
+            // Position the preview canvas near the cursor
+            eyedropperCanvas.style.display = 'block';
+            eyedropperCanvas.style.left = (x + 20) + 'px';
+            eyedropperCanvas.style.top = (y + 20) + 'px';
+            
+            // Calculate the real position on the canvas
+            const realX = x + canvasOffset.x;
+            const realY = y + canvasOffset.y;
+            
+            // Draw zoomed in view of what's under the cursor
+            ctx.clearRect(0, 0, previewSize, previewSize);
+            
+            // Draw grid background to show transparent areas
+            const gridSize = 5;
+            for (let i = 0; i < previewSize; i += gridSize) {
+                for (let j = 0; j < previewSize; j += gridSize) {
+                    ctx.fillStyle = (i + j) % (gridSize * 2) === 0 ? '#ffffff' : '#eeeeee';
+                    ctx.fillRect(i, j, gridSize, gridSize);
+                }
+            }
+            
+            // Draw zoomed content from drawing canvas
+            try {
+                const sourceX = realX - (previewSize / zoomLevel / 2);
+                const sourceY = realY - (previewSize / zoomLevel / 2);
+                const sourceWidth = previewSize / zoomLevel;
+                const sourceHeight = previewSize / zoomLevel;
+                
+                // Draw from drawing canvas
+                ctx.drawImage(
+                    drawingCanvas, 
+                    sourceX, sourceY, sourceWidth, sourceHeight,
+                    0, 0, previewSize, previewSize
+                );
+                
+                // Draw from media canvas
+                ctx.globalCompositeOperation = 'destination-over';
+                ctx.drawImage(
+                    mediaCanvas, 
+                    sourceX, sourceY, sourceWidth, sourceHeight,
+                    0, 0, previewSize, previewSize
+                );
+                ctx.globalCompositeOperation = 'source-over';
+            } catch (error) {
+                console.log("Error drawing eyedropper preview:", error);
+            }
+            
+            // Draw crosshair
+            const center = previewSize / 2;
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.7)';
+            ctx.lineWidth = 1;
+            
+            // Horizontal line
+            ctx.beginPath();
+            ctx.moveTo(0, center);
+            ctx.lineTo(previewSize, center);
+            ctx.stroke();
+            
+            // Vertical line
+            ctx.beginPath();
+            ctx.moveTo(center, 0);
+            ctx.lineTo(center, previewSize);
+            ctx.stroke();
+            
+            // Draw border
+            ctx.strokeStyle = 'black';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(0, 0, previewSize, previewSize);
+        }
+
+        function pickColorFromCanvas(clientX, clientY) {
+            const x = clientX + canvasOffset.x;
+            const y = clientY + canvasOffset.y;
+            
+            // Create a combined image of both canvases
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = drawingCanvas.width;
+            tempCanvas.height = drawingCanvas.height;
+            const tempCtx = tempCanvas.getContext('2d');
+            
+            // Draw in the same order as our visible layers (media on bottom, drawing on top)
+            tempCtx.drawImage(mediaCanvas, 0, 0);
+            tempCtx.drawImage(drawingCanvas, 0, 0);
+            
+            try {
+                // Get pixel data
+                const pixel = tempCtx.getImageData(x, y, 1, 1).data;
+                
+                // Convert to hex
+                const hexColor = `#${((1 << 24) | (pixel[0] << 16) | (pixel[1] << 8) | pixel[2]).toString(16).slice(1)}`;
+                
+                // Set the color picker value
+                document.getElementById('colorPicker').value = hexColor;
+                brushColor = hexColor;
+                
+                // Switch back to draw mode
+                setMode('draw');
+                document.getElementById('eyedropperCanvas').style.display = 'none';
+                
+                showToast(`Color picked: ${hexColor}`);
+            } catch (error) {
+                console.error("Error picking color:", error);
+                showToast("Error picking color. Coordinate may be out of bounds.", "error");
+                setMode('draw');
+            }
+        }
+
+        // Canvas size functions
+        function applyCanvasSize() {
+            // Get the selected size option
+            const selectedOption = document.querySelector('.size-option.selected');
+            if (!selectedOption) return;
+            
+            const newSize = selectedOption.dataset.size;
+            
+            // Only resize if the size has changed
+            if (newSize !== canvasSize) {
+                // Save current content for migration
+                const tempCanvas = document.createElement('canvas');
+                tempCanvas.width = drawingCanvas.width;
+                tempCanvas.height = drawingCanvas.height;
+                const tempCtx = tempCanvas.getContext('2d');
+                tempCtx.drawImage(drawingCanvas, 0, 0);
+                
+                // Update size
+                canvasSize = newSize;
+                
+                // Reset pan offset for a clean start
+                canvasOffset = { x: 0, y: 0 };
+                
+                // Apply the new size
+                resizeCanvases();
+                
+                // Copy content from the temp canvas to the resized canvas
+                drawingCtx.drawImage(tempCanvas, 0, 0);
+                
+                // Regenerate the undo/redo stacks since canvas dimensions changed
+                undoStack = [];
+                redoStack = [];
+                saveCanvasState();
+                
+                showToast(`Canvas size set to ${newSize}`);
+            }
+            
+            document.getElementById('canvasSizeModal').style.display = 'none';
+        }
+
+        // Export canvas function
+        function exportCanvas() {
+            // Create a combined canvas for export
+            const exportCanvas = document.createElement('canvas');
+            exportCanvas.width = drawingCanvas.width;
+            exportCanvas.height = drawingCanvas.height;
+            const exportCtx = exportCanvas.getContext('2d');
+            
+            // Draw media layer first (background)
+            exportCtx.drawImage(mediaCanvas, 0, 0);
+            
+            // Draw drawing layer on top
+            exportCtx.drawImage(drawingCanvas, 0, 0);
+            
+            try {
+                // Convert to image URL
+                const imgURL = exportCanvas.toDataURL('image/png');
+                
+                // Create a download link
+                const downloadLink = document.createElement('a');
+                downloadLink.href = imgURL;
+                downloadLink.download = `air-drawing-${new Date().toISOString().slice(0, 10)}.png`;
+                document.body.appendChild(downloadLink);
+                downloadLink.click();
+                document.body.removeChild(downloadLink);
+                
+                showToast("Drawing exported successfully!");
+            } catch (error) {
+                console.error("Export failed:", error);
+                showToast("Export failed. Try again or check console for errors.", "error");
+            }
+        }
+
+        // Help and toast functions
+        function toggleHelp() {
+            const helpPanel = document.getElementById('keyboardHelper');
+            if (helpPanel.style.display === 'block') {
+                helpPanel.style.display = 'none';
+            } else {
+                helpPanel.style.display = 'block';
+            }
+        }
+
+        function showToast(message, type = 'success') {
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.textContent = message;
+            
+            document.getElementById('toastContainer').appendChild(toast);
+            
+            // Trigger animation
+            setTimeout(() => {
+                toast.classList.add('show');
+            }, 10);
+            
+            // Remove after timeout
+            setTimeout(() => {
+                toast.classList.remove('show');
+                setTimeout(() => {
+                    toast.remove();
+                }, 300);
+            }, 3000);
+        }
+    </script>
+</body>
+</html>
