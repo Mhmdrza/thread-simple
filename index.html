@@ -350,6 +350,16 @@
         const [undoAction, setUndoAction] = React.useState(null);
 
         React.useEffect(() => {
+          if (navigator.storage && navigator.storage.persist) {
+            navigator.storage.persist()
+              .then(granted => {
+                if (granted) {
+                  console.log("Storage is now persistent!");
+                } else {
+                  console.log("Storage persistence denied.");
+                }
+              });
+          }
           async function setupDb() {
             const database = await initDB();
             setDb(database);
